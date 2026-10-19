@@ -156,7 +156,8 @@ touches the task, at most 8 transitions per call; `poke(taskId)` does only that.
   the three like a silent question: a broken Intake cannot keep a submission open appeal after appeal; after the
   third void appeal the NFT decision is final.
 - **Question:** built on chain from stored data only: `<prefix>TASK: definitions task, task_proof and task_no |
-  PROOF: <link> | PROOF TYPE: <type> | DOER: <address> | CASE: <task>/<sub>/<nonce>`; the label `moneycanbuy.fun`
+  PROOF: <link> | PROOF TYPE: <type> | DOER: <address> | CASE: <task>/<sub>/<nonce>`; the prefix opens with
+  `moneycanbuy.fun task check.`; the label `moneycanbuy.fun`
   is the same for every doer and optional unless the rules ask for it; the task's three rule texts go to `definitions` (`task`, `task_proof`, `task_no`), party
   texts go to `definitions` marked untrusted. Body asks a 7-agent panel with quorum 5, bool answer.
 - **Answer binding:** the callback must come from the Intake the question was sent to, for a known, unanswered
@@ -188,8 +189,8 @@ stays as a credit.
 | ...of it, after a dispute the NFT decided right | 5% of R to the correct NFT votes (`nftFeeBps`) | `desks/DisputeDesk.sol`; `VaultParams.sol` |
 | ...no dispute, NFT undecided or wrong | nobody "decided right" to earn that 5%: to the treasury without a stake, burned with a staked doer | `desks/DisputeDesk.sol` |
 | ...the rest, doer without a stake | to the treasury: 10% without an NFT share, 5% with one | `desks/DisputeDesk.sol` |
-| ...the rest, staked doer | of the stakers' 5%: the share fixed at the submission, b = 4% × min(1, power / the author's reward in $YOLO) of R, to the doer (at most the 5%); what is left (5% − b) half to the burn, half to the treasury (an odd unit to the treasury) | `desks/DisputeDesk.sol`; `VaultTypes.sol` |
-| Doer stake condition | at submission (`_stakeBps`): the share depends on the doer's lock power at that moment (`YoloLockHub.powerAt`, also for a queued submission; power = $YOLO locked × lock weeks / 52) against the author's own reward in $YOLO (the bond base: no $YOLO add-on, no others' top-ups), a non-$YOLO reward converted at the $YOLO price parameter at submission; any power above 0 counts, no threshold, and a share that rounds down to 0 bps still settles as a staked doer (`Submission.staked`); no $YOLO price or a hub that fails = no stake; a doer who put money into the task gets the bonus as usual; the share is stored as `Submission.stakeBps`. At payout: `YoloLockHub.stakePower(doer, submittedAt)` must not be 0 (the same lock, never withdrawn, still running) | `YoloLockHub.sol`; `VaultTypes.sol` |
+| ...the rest, staked doer | of the stakers' 5%: the share fixed at the submission, b = 4% × min(1, power / R in $YOLO at the submission) of R, to the doer (at most the 5%); what is left (5% − b) half to the burn, half to the treasury (an odd unit to the treasury) | `desks/DisputeDesk.sol`; `VaultTypes.sol` |
+| Doer stake condition | at submission (`_stakeBps`): the share depends on the doer's lock power at that moment (`YoloLockHub.powerAt`, also for a queued submission; power = $YOLO locked × lock weeks / 52) against the task's whole reward at that moment in $YOLO (the pot: the author's share and every top-up; no $YOLO add-on), a non-$YOLO reward converted at the $YOLO price parameter at submission; any power above 0 counts, no threshold, and a share that rounds down to 0 bps still settles as a staked doer (`Submission.staked`); no $YOLO price or a hub that fails = no stake; a doer who put money into the task gets the bonus as usual; the share is stored as `Submission.stakeBps`. At payout: `YoloLockHub.stakePower(doer, submittedAt)` must not be 0 (the same lock, never withdrawn, still running) | `YoloLockHub.sol`; `VaultTypes.sol` |
 | Where a burn goes | $YOLO to the `BuybackBurner`, waits for `burnYolo`; ETH, USDC, IMD straight to the buyback wallet in the same transaction; a revert there (no `receive`) falls back to the `BuybackBurner`, for its own `forward` | `TaskVault.sol` |
 | $YOLO the treasury would get | sent by the vault to the `BuybackBurner` for `burnYolo`, never in `treasuryPot`: on a $YOLO task the whole fee that is not the doer's or the NFT's burns | `TaskVault.sol` |
 | Loser's bonds (penalty) | split separately in IMD and in the reward currency, no swarm fee refund; a third party who asked the swarm and whose side wins first gets up to 0.5 IMD from what is left of the loser's IMD bond (nothing left, spent on the loser's own unanswered call = no refund); the losing side's own swarm fees already went to the swarm out of its bond | `desks/DisputeDesk.sol` |
@@ -228,7 +229,7 @@ registry's *current* version, which then calls `withdraw`.
 | NFT vote | 24 h | 1 h – 7 d | first dispute | `VaultParams.sol`; `desks/CaseDesk.sol` |
 | Appeal / call-the-swarm window | 24 h | 1 h – 7 d | NFT decision, vote end, or swarm silence | `VaultParams.sol`; `desks/CaseDesk.sol` |
 | Swarm timeout | 6 h, + 1 h for a late delivery of an answer signed in time | 10 min – 3 d (grace fixed) | question asked | `VaultParams.sol`; `VaultTypes.sol` |
-| Doer stake lock | 1 – 52 weeks, power fixed at lock and does not fall before the end; no early withdrawal | fixed | `lock` | `YoloLockHub.sol` |
+| Doer stake lock | 1 – 52 weeks, power fixed at lock and constant until the end unless the lock is changed; extending sets it to amount × weeks left / 52; no early withdrawal | fixed | `lock` | `YoloLockHub.sol` |
 | $YOLO first hour | 0-30 min: buys only by the wallets of a sealed snapshot of identity.md NFT holders (500,000 YOLO per NFT held at the snapshot), no buy tax; every sell pays a flat 30% tax. 30-60 min: anyone buys or sells; both sides' tax falls linearly from 30% to 0 by minute 60, to the project treasury wallet. From minute 60: plain ERC-20, no tax | constants | `openAt`, fixed at token deployment | `token/YoloToken.sol`; `token/NftGate.sol` |
 | Project $YOLO shares (the clock starts at the first split; only the YoloSplitter starts it) | incentives 250M (a project wallet unlocked by vesting, no mechanic pays from it): 62.5M at once + 187.5M over 24 mo; Stabilizer / MM fund 150M at once; dev 77,777,777 over 12 mo; team 50M over 12 mo; treasury the rest (222,222,223), 74,074,074 at once, the rest over 12 mo; no cliffs | constants | the first `YoloSplitter.split` | `token/Vestings.sol`, `token/ProjectVesting.sol`, `token/YoloSplitter.sol` |
 
@@ -254,7 +255,7 @@ implies.
 | $YOLO supply / first hour | 1,000,000,000, no owner, mint or pause; a buy in minutes 0-30 is limited to the sealed snapshot's NFT-holder wallets (500,000 YOLO per NFT held at the snapshot), no buy tax, sells pay a flat 30% tax; in 30-60 both buy and sell tax fall 30% → 0 | `token/YoloToken.sol`, `token/NftGate.sol` |
 | Bond on every try | the bond is always 0.5 IMD + 3% (doer) or 0.5 IMD + 1% (disputer) of the author's own reward | `desks/Desk.sol` |
 | Swarm questions per submission | 3 | `VaultTypes.sol` |
-| Doer stake share | 4% × min(1, power / the author's reward in $YOLO) of R and of the add-on, from any power, no threshold; the share is whole bps, rounded down | `VaultTypes.sol`; `desks/CaseDesk.sol` |
+| Doer stake share | 4% × min(1, power / R in $YOLO at the submission) of R and of the add-on, from any power, no threshold; the share is whole bps, rounded down | `VaultTypes.sol`; `desks/CaseDesk.sol` |
 | Reasons in a swarm question | the one disputer's reason and proof link; `maxClaims` (10) bounds the body-size check | `desks/DisputeDesk.sol`; `VaultParams.sol` |
 | Swarm question text | ≤ 2000 bytes: `prefix + maxTextBytes ≤ 1807` (one user text, the proof link; fixed part at most 193 bytes, `QUESTION_FIXED`) | `VaultParams.sol` |
 | Swarm request body | ≤ 16,384 bytes (worst case checked when parameters are set) | `VaultParams.sol` |
@@ -269,12 +270,13 @@ implies.
 - **`YoloLockHub`** (launch 2, first contract): a lock with a fixed power. `lock(add, weeks)` adds $YOLO and/or sets
   the end to 1-52 weeks from now; the end only moves later, the amount only grows; a lock that ended needs a new
   term. `withdraw()` takes the whole amount once the lock ended, never before. Power = amount × term in weeks / 52,
-  set when the lock is set and constant until its end (no decay); adding or extending recomputes it as `max(old
-  power + added × weeks left / 52, amount × weeks left / 52)` (a token added for the last week of a long lock counts
-  for one week, and the power never drops while the lock runs). Every change is checkpointed. `powerAt(who, t)`
+  set when the lock is set and constant until its end (no decay) unless the lock is changed. Extending (a call
+  with a term) sets it to `amount × weeks left / 52`, the whole amount with the weeks actually left; adding without
+  a term sets it to `power + added × weeks left / 52` (a token added for the last week of a long lock counts for one
+  week). Every change is checkpointed. `powerAt(who, t)`
   reads the lock as it stood strictly before t; the CaseDesk reads it at the submission and fixes the bonus share:
-  4% × min(1, power / the author's reward in $YOLO), the author's reward = their own share of the pot (no $YOLO
-  add-on, no others' top-ups), a non-$YOLO reward converted at the $YOLO price parameter (`DevPrices.yoloValue`; no
+  4% × min(1, power / R in $YOLO), R = the task's whole reward at the submission (the pot: the author's share and
+  every top-up; no $YOLO add-on), a non-$YOLO reward converted at the $YOLO price parameter (`DevPrices.yoloValue`; no
   price = no bonus); any power above 0 counts, no threshold. `stakePower(who, since)` is what the DisputeDesk asks at
   payout: the power at the submission if the same lock (same epoch) still runs, else 0. What is added after the
   submission does not count for it. Examples, $100 USDC reward: power worth $100 → doer $94; worth $50 → $92; worth
@@ -336,10 +338,11 @@ implies.
 
 ## Known limitations
 
-These are rules of the protocol as written, with the reason each one does not pay off as an abuse.
+These are rules of the protocol as written.
 
-- A holder of 20+ NFTs can dispute an honest submission from a second wallet and vote alone to take the NFT 5% of the
-  reward that otherwise goes to the treasury: 20 NFTs at about $5k each for about $3 on a $100 task.
+- The disputer may vote on its own dispute from the same wallet. A holder of 10 NFTs (the vote-end margin) who disputes
+  an honest submission and votes for the doer decides alone, takes the NFT 5% of R and half of its own bond back:
+  about +4.5% of R per task, out of the treasury's share, growing with the reward.
 - A submission nobody disputes within 24 h is accepted without a vote: for those 24 h the doer's bond (0.5 IMD + 3% of
   the author's reward) is open to anyone, including every WON'T DO predictor, who disputes a fake and takes a share of it.
 - An appeal not asked within 6 h is voided with a full refund and reopens the 24 h appeal window (at most 3 swarm calls
@@ -417,10 +420,11 @@ IMD swarm launch (`docs/LAUNCH-TASK.md`: the four launch texts) or `script/Deplo
 
 `YoloPredict` (launch 3) is a market on whether a task gets done by its deadline, in $YOLO only. It reads the vault
 (`getTask`, `getSubmission`) and changes nothing in it except playing
-the task's timers through the public `poke` before it settles; no owner. Full rules: `docs/YOLO.md`.
+the task's timers through the public `poke` before a position and before it settles; no owner. Full rules: `docs/YOLO.md`.
 
 - **Position:** `predict(taskId, willDo, amount)`, at least 1 YOLO, irrevocable; task Open, before its deadline, no
-  submission under review. Anyone may place a position, including the author, contributors and the doer.
+  submission under review (it plays the task's timers first with `vault.poke`, so a submission whose timer has
+  ended does not pause it). Anyone may place a position, including the author, contributors and the doer.
 - **Split at entry:** 5% is to burn (held in `burnHeld` until the outcome, then sent to `0x…dEaD` by `settle`), 5% is
   deferred (`Market.deferred`), 90% (`effPosition`) joins its side's pool.
 - **Weight:** `points = effPosition × (time left to the deadline / (deadline − task creation))²`, fixed at

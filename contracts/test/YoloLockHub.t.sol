@@ -7,10 +7,10 @@ import "./Base.t.sol";
 /// `lock(add, weeks)`: 1..52
 /// weeks, the end only moves later, the amount only grows, an ended lock may be locked again with a term;
 /// `withdraw` only after the end, all of it. Power = amount x term in weeks / 52, fixed at the lock and constant
-/// until its end; adding or extending recomputes it (old power + added x weeks left / 52, or the whole
-/// amount x weeks left / 52 if more). Read from the lock as it stood strictly before the moment asked
+/// until its end unless the lock is changed: extending sets it to the whole amount x weeks left / 52, adding without
+/// a term to power + added x weeks left / 52. Read from the lock as it stood strictly before the moment asked
 /// (checkpoints). The CaseDesk fixes the bonus at the submission: b = 4% x min(1, power / R in $YOLO), R = the
-/// author's reward (no add-on), converted at the DevPrices $YOLO price; any power counts, no threshold. The DisputeDesk pays it if
+/// whole pot at the submission (no add-on), converted at the DevPrices $YOLO price; any power counts, no threshold. The DisputeDesk pays it if
 /// the same lock still runs (`stakePower(who, since)`); the rest of the stakers' 5% splits half to the burn
 /// (rounded down), half to the treasury. Base prices $YOLO at $0.0001: a $100 reward = 1M $YOLO.
 contract YoloLockHubTest is Base {
@@ -166,9 +166,9 @@ contract YoloLockHubTest is Base {
         assertEq(hub.power(dave), 250_000e18);
     }
 
-    /// Adding and extending recompute the power: each added token counts with the weeks it is locked
-    /// from now on, the whole amount with the weeks left if that is more, and the power never drops while the lock
-    /// runs. So a big amount added for the last week of a long lock does not get a year's power.
+    /// Adding and extending recompute the power: an added token counts with the weeks it is locked from now on,
+    /// an extension sets the whole amount with the weeks left. So a big amount added for the last week of a long
+    /// lock does not get a year's power.
     function test_Power_AddAndExtend() public {
         _lock(alice, 520e18, 52); // 520
         _warp(26 * WEEK); // 26 weeks left
@@ -196,6 +196,29 @@ contract YoloLockHubTest is Base {
         assertEq(hub.power(dave), uint256(1_000_000e18 + 1) / 52);
     }
 
+    /// An extension sets the power from the weeks actually left: a 52-week lock served to its last day and then
+    /// rolled one week at a time carries one week's power (amount / 52), not the full amount.
+    function test_Power_RollingOneWeekExtensionDropsToOneWeek() public {
+        uint256 t0 = _now();
+        _lock(alice, 1_000e18, 52);
+        assertEq(hub.power(alice), 1_000e18);
+        _warp(52 * WEEK - 1 days);
+        _lock(alice, 0, 1);
+        assertEq(_end(alice), _now() + WEEK);
+        assertEq(hub.power(alice), uint256(1_000e18) / 52, "one week left: 1/52");
+        for (uint256 i; i < 3; ++i) {
+            _warp(WEEK - 1 days);
+            _lock(alice, 0, 1);
+            assertEq(hub.power(alice), uint256(1_000e18) / 52, "rolled again: still 1/52");
+        }
+        assertEq(hub.powerAt(alice, t0 + 1), 1_000e18, "the past is kept");
+        // a shorter extension inside the year lowers the power as well: 26 weeks in, set to 26 weeks = 520
+        _lock(bob, 1_040e18, 52);
+        _warp(26 * WEEK);
+        _lock(bob, 0, 26);
+        assertEq(hub.power(bob), 520e18);
+    }
+
     /// The checkpoint: the power at `t` is read from the lock as it stood strictly before `t`. A lock made in the
     /// block of a submission does not count for it; what is added later does not change the power at earlier times.
     function test_PowerAt_ReadsTheLockStrictlyBefore() public {
@@ -212,7 +235,7 @@ contract YoloLockHubTest is Base {
         // two changes in one block: the last state of the block counts
         _lock(bob, 100e18, 2);
         _lock(bob, 100e18, 0);
-        assertEq(hub.powerAt(bob, _now() + 1), 7_692_307_692_307_692_307, "200 x 2 / 52");
+        assertEq(hub.powerAt(bob, _now() + 1), 7_692_307_692_307_692_306, "100 x 2 / 52 twice, each rounded down");
         // an extension counts only after its block
         _lock(dave, 52e18, 26);
         _warp(WEEK);
@@ -402,7 +425,7 @@ contract YoloLockHubTest is Base {
         _claimEverythingAndCheck();
     }
 
-    // The $YOLO add-on and others' top-ups are not in the power base: test/ContractRules.t.sol.
+    // The $YOLO add-on is not in the power base, others' top-ups are: test/ContractRules.t.sol.
 
     /// The power is fixed at the submission, also for a queued one: locked 1M for half a year (500k, 2%), submitted
     /// into the queue, 1M more added while queued: still 2% when it is activated and accepted.

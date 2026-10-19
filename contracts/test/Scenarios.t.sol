@@ -132,7 +132,7 @@ contract ScenariosTest is Base {
     }
 
     /// @dev The doer stake: the submission fixes 4% x min(1, power / R in $YOLO) (power
-    ///      = amount x weeks / 52, locked a second before; R = the author's reward, alice's top-up not counted,
+    ///      = amount x weeks / 52, locked a second before; R = the whole pot at the submission, alice's top-up included,
     ///      converted at the dev-set $YOLO price), from any power (no threshold); the settlement pays that share
     ///      only if the submission was accepted and the lock still runs; for a USDC or YOLO reward the doer is
     ///      credited exactly R - 10% + share x R (they never contribute; their bonds and rewards are in IMD).
@@ -142,7 +142,7 @@ contract ScenariosTest is Base {
         if (c.lockWeeks != 0) {
             uint256 power = c.lockAmount * c.lockWeeks / 52;
             address cur = c.currency == 0 ? ETH : c.currency == 1 ? address(usdc) : c.currency == 2 ? address(imd) : address(yolo);
-            uint256 rY = oracle.yoloValue(cur, sb.base); // the author's reward only
+            uint256 rY = oracle.yoloValue(cur, sb.reward); // the whole pot at the submission
             fixedBps = rY == 0 ? 0 : power >= rY ? 400 : 400 * power / rY;
         }
         assertEq(sb.stakeBps, fixedBps, "share fixed at the submission");

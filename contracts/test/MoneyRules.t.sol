@@ -830,7 +830,7 @@ contract MoneyRulesTest is Base {
         assertEq(vault.getSettlement(s3).stakeBps, 0);
     }
 
-    /// @notice the power is measured against the author's reward only, the $YOLO add-on
+    /// @notice the power is measured against the pot only, the $YOLO add-on
     ///         is not counted: $100 + a $100 add-on with 1M of power = the whole 4%, paid on the reward ($94) and on
     ///         the add-on (900k + 40k $YOLO).
     function test_AddonNotInPowerBase() public {

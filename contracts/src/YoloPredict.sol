@@ -134,6 +134,10 @@ contract YoloPredict {
     function predict(uint256 taskId, bool willDo, uint256 amount) external {
         if (amount < minPosition) revert BelowMinPosition();
         Task memory task = vault.getTask(taskId);
+        if (task.activeSub != 0 && block.timestamp < task.deadline) {
+            vault.poke(taskId); // play the timers: a submission ended by its timer does not pause predictions
+            task = vault.getTask(taskId);
+        }
         if (task.status != TaskStatus.Open) revert TaskNotOpen();
         if (block.timestamp >= task.deadline) revert WindowClosed();
         if (task.activeSub != 0) revert SubmissionActive();

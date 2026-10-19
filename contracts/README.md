@@ -111,7 +111,7 @@ screenshot link: `https://`, host = from `https://` to the first `/`, `?`, `#` o
 (`HostNotAllowed` otherwise).
 
 Swarm question: `<prefix>TASK: definitions task, task_proof and task_no | PROOF: <proofUri> | PROOF TYPE: <x_post|video|onchain_tx|link> | DOER:
-0x… | CASE: t/s/n`. The default prefix tells the panel the label `moneycanbuy.fun` (in the post, the video description,
+0x… | CASE: t/s/n`. The default prefix opens with `moneycanbuy.fun task check.` and tells the panel the label `moneycanbuy.fun` (in the post, the video description,
 the page or on paper in the frame) is optional and counts only if the task condition requires it, and for `onchain_tx`
 the transaction must be sent from DOER. Fixed parts are at most `ParamsBounds.QUESTION_FIXED` bytes
 at the largest ids, and the parameter bounds keep the whole body within the Intake limits; the worst question is

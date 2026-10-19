@@ -6,7 +6,7 @@ import "./Base.t.sol";
 /// @dev "Sweeten with $YOLO": a YOLO bonus on top of any task. Paid on the
 ///      accepted submission by the reward's rule: 90% to the doer, 5% to the NFT votes if the NFT decided right, the
 ///      rest burned (the treasury's $YOLO); a doer whose lock earned them the stake bonus on the reward (the share
-///      fixed at the submission, 4% x min(1, power / the author's reward in $YOLO, add-on not counted),
+///      fixed at the submission, 4% x min(1, power / the pot in $YOLO, add-on not counted),
 ///      `Settlement.stakeBps`) and who
 ///      never sweetened the task gets that share of it more. Locked like
 ///      the reward until the deadline; back to each sweetener after an expiry or an unwind. No cap, no notice.
@@ -205,7 +205,7 @@ contract SweetenerTest is Base {
         _claimEverythingAndCheck();
     }
 
-    /// Part power (62,500 for a year: a quarter of the 250k author's reward; the 1M add-on not counted):
+    /// Part power (62,500 for a year: a quarter of the 250k reward; the 1M add-on not counted):
     /// 1% more, 91% to them, 9% burned. Small power (50k for 13 weeks = 12,500 against 0.01 ETH = 250k):
     /// no threshold, 12,500 / 250k of 4% = 0.2%, the same share of the bonus: 90.2% to them,
     /// 9.8% burned.

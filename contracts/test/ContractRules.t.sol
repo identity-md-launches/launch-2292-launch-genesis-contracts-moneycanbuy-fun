@@ -8,9 +8,8 @@ import "./Base.t.sol";
 ///         (2) a top-up made while a proof is being checked joins the reward at once (like the $YOLO add-on): the
 ///             accepted doer is paid it, it never goes back to the contributor; the doer's bond stays 3% of the
 ///             author's own reward; a decided task takes no top-up.
-///         (3) the stake power is measured against the author's reward only (the base of the
-///             doer bond): no $YOLO add-on, no others' top-ups; the bonus share is still paid on the whole reward and
-///             on the add-on. Base prices: $YOLO at $0.0001, $100 = 1M $YOLO.
+///         (3) the stake power is measured against the task's whole reward at the submission (the pot with
+///             every top-up), no $YOLO add-on; the bonus share is paid on the whole reward and on the add-on. Base prices: $YOLO at $0.0001, $100 = 1M $YOLO.
 contract ContractRulesTest is Base {
     uint8 internal constant REJECT = 2;
 
@@ -132,21 +131,43 @@ contract ContractRulesTest is Base {
         _claimEverythingAndCheck();
     }
 
-    /// (3) others' top-ups are not in the power base either: author $100, bob tops up $100 before the proof; power
-    ///     worth $50 (500k for a year) is 2% (against the author's $100), paid on the whole $200: $184 to the doer.
-    function test_TopUpNotInPowerBase_BonusOnTheWholeReward() public {
+    /// (3) others' top-ups are in the power base: author $100, bob tops up $100 before the proof; power
+    ///     worth $50 (500k for a year) is 1% (against the whole $200), paid on the whole $200: $182 to the doer.
+    function test_TopUpInPowerBase_BonusOnTheWholeReward() public {
         _lock(doer, 500_000e18, 52);
         _warp(1);
         uint256 t = _create(author, address(usdc), 100e6);
         _topUp(bob, t, 100e6);
         assertEq(vault.potOf(t), 200e6);
         uint256 s = _submit(doer, t);
-        assertEq(_sub(s).stakeBps, 200, "500k against the author's 1M");
+        assertEq(_sub(s).stakeBps, 100, "500k against the whole 2M");
         assertEq(_sub(s).bond.rew, 3e6, "the bond: 3% of the author's 100");
         _warp(24 hours);
         vault.poke(t);
         assertEq(uint8(_sub(s).outcome), uint8(Outcome.Accepted));
-        assertEq(vault.credits(address(usdc), doer), 184e6 + 3e6, "92% of 200 plus his rew bond back");
+        assertEq(vault.credits(address(usdc), doer), 182e6 + 3e6, "91% of 200 plus his rew bond back");
+        _claimEverythingAndCheck();
+    }
+
+    /// (3) a friend tops up the pool: author $5, bob $995. A lock worth only the author's $5 (50k for a year) is
+    ///     50k / 10M of 4% = 2 bps of the $1,000, not the whole 4%; the full 4% needs power worth the whole pool.
+    function test_FriendTopUp_BonusNeedsLockAgainstTheWholePool() public {
+        _lock(doer, 50_000e18, 52);
+        _lock(dave, 10_000_000e18, 52);
+        _warp(1);
+        uint256 t = _create(author, address(usdc), 5e6);
+        _topUp(bob, t, 995e6);
+        assertEq(vault.potOf(t), 1_000e6);
+        uint256 s = _submit(doer, t);
+        assertEq(_sub(s).stakeBps, 2, "50k against the whole 10M");
+        _warp(24 hours);
+        vault.poke(t);
+        assertEq(uint8(_sub(s).outcome), uint8(Outcome.Accepted));
+        assertEq(vault.credits(address(usdc), doer), 900e6 + 0.2e6 + 0.15e6, "90% + 0.02% of 1,000 plus the rew bond");
+        uint256 t2 = _create(author, address(usdc), 5e6);
+        _topUp(bob, t2, 995e6);
+        uint256 s2 = _submit(dave, t2);
+        assertEq(_sub(s2).stakeBps, 400, "power worth the whole pool: the whole 4%");
         _claimEverythingAndCheck();
     }
 }

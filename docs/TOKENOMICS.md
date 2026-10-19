@@ -45,8 +45,8 @@ with code references: [docs/MECHANICS.md](MECHANICS.md) "Money and fees", [docs/
 - the other 5% (the stakers' part) to the treasury when the doer has no stake;
 - **staked doer**: YOLO locked in `YoloLockHub` for 1 to 52 weeks, power = amount × weeks / 52, fixed at the lock;
   any power above 0 at their submission counts, also when they put money into the task. Bonus b = 4% × min(1,
-  power / the author's reward in YOLO) of the reward to them (the author's reward = their own share of the pot, no
-  YOLO add-on, no others' top-ups; a non-YOLO reward converted at the $YOLO price parameter at submission), the rest of
+  power / the reward in YOLO) of the reward to them (the reward = the task's whole pot at the submission, every
+  top-up included, no YOLO add-on; a non-YOLO reward converted at the $YOLO price parameter at submission), the rest of
   the stakers' 5% (5% − b) half burned, half to the treasury. Example, $100 accepted without a dispute: power
   worth $100: doer $94, burn $0.50 + $5 (the NFT part nobody earned), treasury $0.50; worth $50: doer $92, burn
   $1.50 + $5, treasury $1.50; worth $5: doer $90.20, burn $2.40 + $5, treasury $2.40; no stake: doer $90, treasury

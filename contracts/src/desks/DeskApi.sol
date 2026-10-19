@@ -17,7 +17,7 @@ struct SubmitTerms {
     bool busy; // a submission is active: a new one is queued
     uint256 pot;
     uint256 base; // the author's own share of the pot: the base of the bonds' "rew" part
-    uint256 addon; // $YOLO add-on of the task (the vault's YoloSweetener): no bond, not in the stake bonus base
+    uint256 addon; // $YOLO add-on of the task (the vault's YoloSweetener): no bond, not in the stake bonus base (the pot is)
 }
 
 /// @notice The fixed fields of a submission the other desks read (CaseDesk.subCore).

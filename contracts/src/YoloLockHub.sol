@@ -7,11 +7,11 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 /// @title YoloLockHub: the doer stake, a $YOLO lock for a term
 /// @notice A doer locks an amount of
 ///         $YOLO for 1 to 52 weeks. The lock's power = amount x term in weeks / 52 is fixed when the lock is set and
-///         does not fall until its end; adding or extending recomputes it (every added token counts
-///         with the weeks it is locked from now on, `old power + added x weeks left / 52`, and the whole amount with the
-///         weeks left if that is more; power never drops while the lock runs). The bonus itself is not computed here:
-///         the CaseDesk reads `powerAt` at a submission and compares it with the reward in $YOLO (4% x min(1, power /
-///         reward)); the DisputeDesk checks `stakePower` at the payout (the same lock still running, never withdrawn
+///         does not change until its end unless the lock is changed: setting a term again (extending) recomputes it
+///         from the whole amount and the weeks actually left, `amount x weeks left / 52`; adding without a new term
+///         adds `added x weeks left / 52` to the power. The bonus itself is not computed here:
+///         the CaseDesk reads `powerAt` at a submission and compares it with the task's whole reward in $YOLO
+///         (4% x min(1, power / reward)); the DisputeDesk checks `stakePower` at the payout (the same lock still running, never withdrawn
 ///         in between: a lock's `epoch` grows at every withdrawal). This contract pays nothing itself.
 ///
 ///         `lock(add, weeks)` adds to the amount and/or sets the end to `weeks` from now (1..52); the end can only move
@@ -59,6 +59,8 @@ contract YoloLockHub {
 
     /// @notice Add `add` $YOLO (pulled with transferFrom) and, if `weeks_` is not 0, set the end to `weeks_` weeks from
     ///         now (1..52, never earlier than the current end). A lock that is not running needs a term.
+    ///         With a term the power becomes the whole amount x weeks left / 52; without one (add only) it grows by
+    ///         added x weeks left / 52.
     function lock(uint256 add, uint256 weeks_) external {
         Lock memory l = locks[msg.sender];
         if (l.end != 0 && l.end <= block.timestamp) ++l.epoch; // an ended lock set again is a new lock: no stake bonus
@@ -78,9 +80,8 @@ contract YoloLockHub {
         if (amount == 0) revert ZeroAmount();
         if (amount > type(uint96).max) revert BadTerm();
         uint256 left = (end - block.timestamp + WEEK - 1) / WEEK; // whole weeks, rounded up
-        uint256 pw = old + add * left / MAX_WEEKS;
-        uint256 all = amount * left / MAX_WEEKS;
-        if (all > pw) pw = all;
+        // a new term: the whole amount with the weeks left; an add only: the running power plus the added tokens
+        uint256 pw = weeks_ != 0 ? amount * left / MAX_WEEKS : old + add * left / MAX_WEEKS;
         locks[msg.sender] = Lock(uint96(amount), uint64(end), l.epoch);
         _checkpoint(msg.sender, uint96(pw), uint64(end), l.epoch);
         if (add != 0) yolo.safeTransferFrom(msg.sender, address(this), add);

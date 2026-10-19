@@ -114,7 +114,7 @@ contract TaskVault {
     mapping(bytes32 => AskedVia) internal _askedVia;
     /// @notice The YoloSweetener of this vault (launch 3), bound once by the registry owner (`bindSweetener`). Its
     ///         $YOLO add-on is paid with the reward; the stake bonus
-    ///         share is paid on it too, but the power is measured against the author's reward only. Until it is bound no add-on exists (the sweetener refuses deposits).
+    ///         share is paid on it too, but the power is measured against the pot only. Until it is bound no add-on exists (the sweetener refuses deposits).
     address public sweetener;
 
     bool private transient _entered;

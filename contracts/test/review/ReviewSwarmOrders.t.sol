@@ -81,8 +81,8 @@ contract ReviewSwarmOrders is Test {
         assertEq(h4, HASH_T4);
     }
 
-    bytes32 constant HASH_T1 = 0xa1933e4ec480ea25caf1087dce50c9512ed824068f322625106cafdbd0481290;
-    bytes32 constant HASH_T2 = 0x1b10bbc7c997e3280595fe5d37903d881ca68f1837eb1d1824c210d7a3294fa5;
-    bytes32 constant HASH_T3 = 0x6e278515b0b6d7255fd225586712efcb4cf919434bb9c04dfa67d56ebd14a8d1;
-    bytes32 constant HASH_T4 = 0xb906b9c93ee6564e7409f6d83e27e0d02e23e72376f4866b84122a935ccc1d86;
+    bytes32 constant HASH_T1 = 0xe0161177113a03c1dce7415ed9e1c076c939b5968441681ed1fdd3a3632bfed6;
+    bytes32 constant HASH_T2 = 0x9adb7cd61bdff19f992b83d1a9ea1517767d60fbec90fc4c558de186b04525b4;
+    bytes32 constant HASH_T3 = 0x648b6ba47fb0a9d37651b0bedc56c9409154b663f6bc5b6b38e9577ef42a244a;
+    bytes32 constant HASH_T4 = 0x5d1a8eff6f36add21363c69a6355fc1ae6c261428b7091e74637bc4b9a3c032a;
 }

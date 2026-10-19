@@ -59,8 +59,8 @@ contract CaseDesk is Desk {
     ///         top-ups of others and the $YOLO add-on are not in it; always the same, no escalation for rejected
     ///         submissions or the queue. No oracle, no USD conversion.
     ///         The doer stake bonus is fixed here too (`stakeBps`): 4% x min(1, power / R in
-    ///         $YOLO), the power of the doer's lock as it stood before this block, R = the author's reward (their
-    ///         share of the pot, the base of the doer bond; no add-on, no others' top-ups)
+    ///         $YOLO), the power of the doer's lock as it stood before this block, R = the task's whole reward at this
+    ///         moment (the pot: the author's share and every top-up; no $YOLO add-on)
     ///         converted at the dev-set $YOLO price (DevPrices: no oracle, no sample window);
     ///         any power counts, no threshold; no $YOLO price = no bonus (the only
     ///         DevPrices read of a submission; it never blocks a submission).
@@ -505,8 +505,8 @@ contract CaseDesk is Desk {
     /// @dev The stake bonus of a new submission in bps of R (see `submit`). A doer who put money into the task's
     ///      own reward gets the bonus too. Never
     ///      blocks a submission: a hub or a DevPrices that fails counts as no stake.
-    ///      The power is measured against the author's reward only (`t.base`, the base of the doer bond), without
-    ///      others' top-ups and without the $YOLO add-on; the share is still paid on both.
+    ///      The power is measured against the whole pot at the submission (`t.pot`: the author's share and every
+    ///      top-up), without the $YOLO add-on; the share is paid on the pot and on the add-on.
     ///      `staked`: any power with a $YOLO price, also when the share floors to 0 bps (the staked split still applies).
     function _stakeBps(SubmitTerms memory t, address doer, ParamsCore memory p)
         private
@@ -520,7 +520,7 @@ contract CaseDesk is Desk {
         uint256 power = abi.decode(ret, (uint256));
         if (power == 0) return (0, false);
         uint256 r;
-        try DevPrices(p.devPrices).yoloValue(t.currency, t.base) returns (uint256 y) {
+        try DevPrices(p.devPrices).yoloValue(t.currency, t.pot) returns (uint256 y) {
             r = y;
         } catch {}
         if (r == 0) return (0, false); // no $YOLO price
