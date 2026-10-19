@@ -140,10 +140,10 @@ library LaunchPlan {
 
     // ---- the project's wallets (EOAs, checksums checked): plan arguments only, no contract
     // holds them. docs/LAUNCH-TASK.md writes the same addresses into the launch texts.
-    address internal constant PROJECT_TREASURY = 0x8Ad18E99F4C8d8406f9Ba8899CF308000518A981; // treasury, buy tax, owner of registry + directory
+    address internal constant PROJECT_TREASURY = 0x3c587Eff6c96eAcF7E3dcC2CFf6416161386E48C; // treasury, buy tax, owner of registry + directory
     address internal constant PROJECT_INCENTIVES = 0x7085193516EDc587fAebFF7a48548eAC8db5fAb5;
     address internal constant PROJECT_STABILIZER = 0xaaB0269b956bd5F97B44529569b042e7BD72B508;
-    address internal constant PROJECT_DEV = 0x3c587Eff6c96eAcF7E3dcC2CFf6416161386E48C;
+    address internal constant PROJECT_DEV = 0x8Ad18E99F4C8d8406f9Ba8899CF308000518A981;
     address internal constant PROJECT_TEAM = 0x153D12cc398d79A99B781B23DB6399556b84ca76;
     // the buyback wallet: the BuybackBurner's `forward` sends ETH, USDC
     // and IMD here; a dev parameter afterwards (BuybackBurner.setBuybackWallet)
@@ -219,7 +219,7 @@ library LaunchPlan {
     }
 
     /// @notice Launch 1 on mainnet: DevPrices (fixed prices, no oracle) and the real swap adapter. The DevPrices owner is
-    ///         the dev wallet PROJECT_DEV (the wallet that pays launches 0, 2 and 3 and receives the dev vesting; the treasury pays launch 1), not the
+    ///         the dev wallet PROJECT_DEV (the wallet that receives the dev vesting; the treasury pays every launch), not the
     ///         parameter owner: TaskVault.cancelTask and BuybackBurner.setBuybackWallet accept only that owner (only
     ///         the dev wallet cancels a task).
     function support(IContractFactory f, uint64 launchNumber, Counterparties memory c, YoloPool memory y)

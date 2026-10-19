@@ -56,26 +56,26 @@ contract ReviewLaunchStatic is Test {
 
     // ---- docs/LAUNCH-TASK.md as written: the constructorArgs lists copied verbatim. Change one, change both.
     string constant DOC0_GATE =
-        '["0x0000ec93127baa929e58e97dd0095a2bfb38ec1d", "0x8Ad18E99F4C8d8406f9Ba8899CF308000518A981"]';
+        '["0x0000ec93127baa929e58e97dd0095a2bfb38ec1d", "0x3c587Eff6c96eAcF7E3dcC2CFf6416161386E48C"]';
     string constant DOC0_INCENTIVES = '["0x7085193516EDc587fAebFF7a48548eAC8db5fAb5"]';
-    string constant DOC0_DEV = '["0x3c587Eff6c96eAcF7E3dcC2CFf6416161386E48C"]';
+    string constant DOC0_DEV = '["0x8Ad18E99F4C8d8406f9Ba8899CF308000518A981"]';
     string constant DOC0_TEAM = '["0x153D12cc398d79A99B781B23DB6399556b84ca76"]';
-    string constant DOC0_TREASURY = '["0x8Ad18E99F4C8d8406f9Ba8899CF308000518A981"]';
+    string constant DOC0_TREASURY = '["0x3c587Eff6c96eAcF7E3dcC2CFf6416161386E48C"]';
     string constant DOC0_SPLITTER =
         '["$contract:IncentivesVesting", "$contract:DevVesting", "$contract:TeamVesting", "$contract:TreasuryVesting", "0xaaB0269b956bd5F97B44529569b042e7BD72B508"]';
     string constant DOC1_TOKEN =
-        '["$poolManager", "<NFT_GATE>", "0x8Ad18E99F4C8d8406f9Ba8899CF308000518A981", "<OPEN_AT>"]';
+        '["$poolManager", "<NFT_GATE>", "0x3c587Eff6c96eAcF7E3dcC2CFf6416161386E48C", "<OPEN_AT>"]';
     // a stand-in for <OPEN_AT> (unix seconds: fixed when the launch text is filled in)
     uint256 constant OPEN_AT = 1_800_003_600;
     string constant DOC1_POOL_BPS = "1500";
     string constant DOC1_TOTAL_SUPPLY = "1000000000000000000000000000";
     string constant DOC1_INITIAL_MCAP_WEI = "15000000000000000000000";
     string constant DOC1_PRICES =
-        '["0x3c587Eff6c96eAcF7E3dcC2CFf6416161386E48C", "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7", "$token", "1000000000000000", "2389244350450000000000", "5247665725934671441"]';
+        '["0x8Ad18E99F4C8d8406f9Ba8899CF308000518A981", "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7", "$token", "1000000000000000", "2389244350450000000000", "5247665725934671441"]';
     string constant DOC1_ADAPTER =
         '["0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"]';
     string constant DOC1_REGISTRY =
-        '["0x8Ad18E99F4C8d8406f9Ba8899CF308000518A981", "0xa43e6f75ee006411f79ac1c84120606c2330de82", "$contract:DevPrices", "$contract:UniswapV3SwapAdapter", "0x0000ec93127baa929e58e97dd0095a2bfb38ec1d", "0x00000000000000447e69651d841bd8d104bed493", "0x8Ad18E99F4C8d8406f9Ba8899CF308000518A981", "0x5598aa9146215bc13eb26f2c692ad1461fd32982"]';
+        '["0x3c587Eff6c96eAcF7E3dcC2CFf6416161386E48C", "0xa43e6f75ee006411f79ac1c84120606c2330de82", "$contract:DevPrices", "$contract:UniswapV3SwapAdapter", "0x0000ec93127baa929e58e97dd0095a2bfb38ec1d", "0x00000000000000447e69651d841bd8d104bed493", "0x3c587Eff6c96eAcF7E3dcC2CFf6416161386E48C", "0x5598aa9146215bc13eb26f2c692ad1461fd32982"]';
     string constant DOC1_ATTESTATION = '["$contract:ParamsRegistry"]';
     string constant DOC1_VOTE_POWER =
         '["0x0000ec93127baa929e58e97dd0095a2bfb38ec1d", "0x00000000000000447e69651d841bd8d104bed493"]';
@@ -90,11 +90,11 @@ contract ReviewLaunchStatic is Test {
         '["<PARAMS_REGISTRY>", "0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7", "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "<YOLO>", "<ATTESTATION_CHECKER>", "<TEXT_RULES>", "$contract:CaseDesk", "$contract:DisputeDesk", "<BUYBACK_BURNER>"]';
     string constant DOC3_SWEETENER = '["<TASK_VAULT>"]';
     string constant DOC3_TROPHY = '["<TASK_VAULT>", "$contract:TrophyCatalog"]'; // a fixed 7,777 YOLO, no price arguments
-    string constant DOC3_CATALOG = '["0x8Ad18E99F4C8d8406f9Ba8899CF308000518A981"]'; // trophy designs, the project wallet
+    string constant DOC3_CATALOG = '["0x3c587Eff6c96eAcF7E3dcC2CFf6416161386E48C"]'; // trophy designs, the project wallet
     string constant DOC3_DIRECTORY =
-        '["0x8Ad18E99F4C8d8406f9Ba8899CF308000518A981", "<TASK_VAULT>", "$contract:YoloSweetener", "$contract:DareTrophy", "<CORE_BLOCK>"]';
+        '["0x3c587Eff6c96eAcF7E3dcC2CFf6416161386E48C", "<TASK_VAULT>", "$contract:YoloSweetener", "$contract:DareTrophy", "<CORE_BLOCK>"]';
     string constant DOC3_HIDDENLIST =
-        '["0x8Ad18E99F4C8d8406f9Ba8899CF308000518A981", "0x0000ec93127baa929e58e97dd0095a2bfb38ec1d", "0x00000000000000447e69651d841bd8d104bed493"]';
+        '["0x3c587Eff6c96eAcF7E3dcC2CFf6416161386E48C", "0x0000ec93127baa929e58e97dd0095a2bfb38ec1d", "0x00000000000000447e69651d841bd8d104bed493"]';
     string constant DOC3_PREDICT = '["<TASK_VAULT>", "1000000000000000000"]'; // no sweetener arg (no exclusion)
     // the per-contract room the doc states (EIP-170 margin, bytes); every margin is re-measured with
     // `forge build --sizes` whenever the code changes (via-ir shifts untouched contracts too: whole-program opt).

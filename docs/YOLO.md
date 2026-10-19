@@ -40,7 +40,7 @@ project, carried out by its wallets in public transactions; no contract enforces
 3. **Trophies for burned $YOLO.** The doer of an accepted submission may mint its NFT trophy, once; the price (a
    fixed 7,777 YOLO) is burned (section "Trophies" below).
 4. **Treasury-funded dares.** The pool's 1% of YOLO/IMD volume goes to the project treasury: the treasury wallet
-   `0x8Ad18E99F4C8d8406f9Ba8899CF308000518A981` pays for launch 1, so it is the pool's `requester` from the pool's
+   `0x3c587Eff6c96eAcF7E3dcC2CFf6416161386E48C` pays for launch 1, so it is the pool's `requester` from the pool's
    first block; there is no transfer step. The project decides which dares to subsidize from that income in IMD
    (the YOLO side burns, use 5): it posts them as ordinary tasks or sweetens existing ones, so every reward and
    payout is made on chain by the contract that holds it.
@@ -266,7 +266,7 @@ it if the lock still runs.
   does not move a price parameter. The risk moves from market manipulation to whether the parameter is kept current:
   a stale parameter does not touch anyone's locked money — bonds and payouts never read a live price — it only
   shifts the doer stake bonus until the parameter is updated.
-- **Project treasury wallet `0x8Ad18E99F4C8d8406f9Ba8899CF308000518A981`** (an EOA, not a multisig). It receives
+- **Project treasury wallet `0x3c587Eff6c96eAcF7E3dcC2CFf6416161386E48C`** (an EOA, not a multisig). It receives
   the first-hour tax (liquid) and the treasury vesting. It pays for launch 1 and is the pool's fee
   recipient (use 4). One key: trust in the project. Publicly promised, not code: the tax YOLO and the pool's YOLO
   fees are burned on arrival (use 5); the fee YOLO of tasks never reaches it (code).
