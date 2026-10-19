@@ -6,83 +6,67 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ParamsRegistry} from "./ParamsRegistry.sol";
 import {ParamsCore} from "./VaultParams.sol";
-import {IPriceOracle} from "./interfaces/IPriceOracle.sol";
-import {SubmitTerms, SubCore, ICaseDesk} from "./desks/DeskApi.sol";
-import {TaskStatus, Outcome, Submission, SwarmRequest, SWARM_DELIVERY_GRACE} from "./VaultTypes.sol";
+import {SubmitTerms} from "./desks/DeskApi.sol";
+import {TaskStatus, Outcome, Verdict, Task, Submission, Settlement, Dispute} from "./VaultTypes.sol";
 
-/// @dev The vault views the sweetener reads.
+/// @dev The vault views the sweetener reads (the vault forwards the desk views).
 interface ISweetenedVault {
     function submitTerms(uint256 taskId, address doer) external view returns (SubmitTerms memory);
-    function caseDesk() external view returns (address);
+    function getTask(uint256 taskId) external view returns (Task memory);
+    function getSubmission(uint256 subId) external view returns (Submission memory);
+    function getSettlement(uint256 subId) external view returns (Settlement memory);
+    function getDispute(uint256 subId) external view returns (Dispute memory);
+    function votesOf(uint256 subId, address payTo) external view returns (uint256 accept, uint256 reject);
     function registry() external view returns (address);
     function yolo() external view returns (IERC20);
-    function requests(bytes32 requestId) external view returns (SwarmRequest memory);
-}
-
-/// @dev The CaseDesk view the sweetener reads for the swarm request of a submission.
-interface ISweetenedCaseDesk {
-    function getSubmission(uint256 subId) external view returns (Submission memory);
+    function sweetener() external view returns (address);
+    function burner() external view returns (address);
+    function poke(uint256 taskId) external;
 }
 
 /// @title YoloSweetener: a $YOLO bonus on top of any task, whatever the currency of its reward
-/// @notice Anyone may add YOLO to an open task. The bonus sits here, apart from the vault's pots, and follows the task:
-///         - a submission is accepted (task `Completed`): anyone calls `payout`. A bonus worth more than the large
-///           threshold of the task's parameters (`largeRewardUsd`, by that version's oracle) is paid in
-///           full only to a submission the swarm confirmed (its latest swarm request answered "yes"); otherwise the
-///           doer gets the bonus up to that threshold and the rest goes back to the sweeteners pro rata to what each
-///           put in (`withdraw`). Without a YOLO price the payout waits (`PayoutDeferred`, nothing moves) and pays
-///           in full once `NO_PRICE_WAIT` (7 days) has passed since the first such call with still no price. The doer pays the protocol fee of the task's parameters (`feeBps`, 10%) on what he
-///           gets, the fee goes to the treasury, both in YOLO;
-///         - the task expires or is unwound: each sweetener takes back his own (`withdraw`);
-///         - while the task is open and no submission is active, a sweetener may also take his back after one hour of
-///           public notice (`announceWithdraw`; the notice then holds for a day), so a
-///           doer sees the bonus leaving before he submits; while one is active (under review, disputed, asked)
-///           nothing leaves, like a contributor's active share in the vault. A live notice cannot be renewed and
-///           `announceWithdraw` reverts while a submission is active, so a doer always sees a real gap before a
-///           fresh notice starts (audit round 2, finding 16).
-///         Reads the vault's task status, its busy flag, the accepted submission and its swarm answer; changes nothing
-///         in the vault. No owner, no admin. The fee goes to the treasury of the current parameters, as
-///         `TaskVault.sweepTreasury`. The whole fee goes to the treasury; the NFT
-///         voters' share applies to the reward only.
+/// @notice Anyone may add $YOLO to an open task before its deadline. The bonus sits here, apart from the vault's pots,
+///         and follows the task:
+///         - no limit on the bonus (no limit on a task's reward or on
+///           the add-on either);
+///         - locked like the reward: nobody takes it back while the task is open, before or after the deadline;
+///         - the task expires: each sweetener takes back their own (`withdraw`);
+///         - a submission is accepted (`Completed`): anyone calls `payout`. The whole bonus goes by the reward's
+///           rule: 10% fee, of it 5% (`nftFeeBps`) to the NFT votes on "accept" if the
+///           NFT decided right (claimed here, `claimVoter`, pro rata to their votes), the rest goes to the vault's
+///           burner, where it waits for anyone's "Burn" (the treasury's $YOLO income is burned); if the vault paid the doer the stake bonus on this
+///           submission, they get the same share of the bonus even if they sweetened this task themselves.
+///           (`Settlement.stakeBps`: 4% x min(1, power / the author's reward in $YOLO)). The 5%
+///           of YOLO Predict positions never come here: YoloPredict pays them itself.
+///         Takes deposits only once the vault bound it (`TaskVault.bindSweetener`): only then does the core read the
+///         add-on with the reward, and pays the stake bonus share on it.
+///         Reads the vault (task, accepted submission, its settlement and votes); changes nothing in it. No owner.
 contract YoloSweetener {
     using SafeERC20 for IERC20;
 
     uint256 private constant BPS = 10_000;
-    /// @notice A withdrawal from an open task waits this long after `announceWithdraw` ...
-    uint256 public constant NOTICE = 1 hours;
-    /// @notice ... and the notice holds this long after that; past that, or once used, `announceWithdraw` must be
-    ///         called again (it reverts while the earlier notice is still live, audit round 2, finding 16).
-    uint256 public constant NOTICE_VALID = 1 days;
-    /// @notice A payout that needs a YOLO price waits while there is none; after this long from the first such
-    ///         call, still without a price, it pays the doer in full (swarm audit #6).
-    uint256 public constant NO_PRICE_WAIT = 7 days;
 
     ISweetenedVault public immutable vault;
-    ICaseDesk public immutable caseDesk; // the vault's, read at deployment like the registry and $YOLO
     ParamsRegistry public immutable registry;
     IERC20 public immutable yolo;
 
-    /// @notice YOLO held for a task: the bonus until it is paid out, then what goes back to the sweeteners (0 if all
-    ///         of it went to the doer).
+    /// @notice $YOLO held for a task until it is paid out or taken back.
     mapping(uint256 => uint256) public bonusOf;
     /// @notice What `who` put on a task and has not taken back.
     mapping(uint256 => mapping(address => uint256)) public givenBy;
-    /// @notice After a capped payout: the sum of `givenBy` still to share the returned rest (0 = nothing returns).
-    mapping(uint256 => uint256) public returnBase;
-    /// @notice When the withdrawal `who` announced on an open task may happen (0 = no notice).
-    mapping(uint256 => mapping(address => uint64)) public leavingAt;
-    /// @notice When `payout` of a task first found no YOLO price while it needed one (0 = never).
-    mapping(uint256 => uint64) public noPriceSince;
+    /// @notice Whether `who` ever sweetened a task (a record only: a doer who did keeps their stake bonus).
+    mapping(uint256 => mapping(address => bool)) public gave;
+    /// @notice The NFT votes' share of a paid-out bonus not claimed yet, and their votes not claimed yet.
+    mapping(uint256 => uint256) public voterPool;
+    mapping(uint256 => uint256) public voterVotesLeft;
+    mapping(uint256 => mapping(address => bool)) public voterClaimed;
 
     event Sweetened(uint256 indexed taskId, address indexed from, uint256 amount, uint256 bonus);
     event BonusWithdrawn(uint256 indexed taskId, address indexed to, uint256 amount, uint256 bonus);
-    event BonusPaid(uint256 indexed taskId, uint256 indexed subId, address indexed doer, uint256 toDoer, uint256 fee);
-    /// @notice The swarm did not confirm the accepted submission: `returned` of the bonus (above `cap`) goes back.
-    event BonusCapped(uint256 indexed taskId, uint256 cap, uint256 returned);
-    event WithdrawAnnounced(uint256 indexed taskId, address indexed from, uint256 amount, uint64 leavingAt);
-    /// @notice `payout` needed a YOLO price and there was none: nothing moved. From `fullFrom` a payout still without
-    ///         a price pays the doer in full.
-    event PayoutDeferred(uint256 indexed taskId, uint256 indexed subId, uint64 fullFrom);
+    event BonusPaid(
+        uint256 indexed taskId, uint256 indexed subId, address indexed doer, uint256 toDoer, uint256 toVoters, uint256 burned
+    );
+    event VoterBonusClaimed(uint256 indexed taskId, address indexed payTo, uint256 votes, uint256 amount);
 
     error ZeroAddress();
     error ZeroAmount();
@@ -90,158 +74,100 @@ contract YoloSweetener {
     error BonusLocked();
     error NotAccepted();
     error NothingToPay();
-    error NoNotice();
-    error NoticeNotDue(uint64 leavingAt);
-    /// @notice `announceWithdraw` while a submission is active (audit round 2, finding 16).
-    error SubmissionActive();
-    /// @notice `announceWithdraw` while a notice already given is still live (audit round 2, finding 16).
-    error NoticeLive(uint64 validUntil);
+    /// @notice The vault has not bound this sweetener (`TaskVault.bindSweetener`): its add-on would not count.
+    error NotBound();
 
     constructor(address vault_) {
         if (vault_ == address(0)) revert ZeroAddress();
         ISweetenedVault v = ISweetenedVault(vault_);
         vault = v;
-        caseDesk = ICaseDesk(v.caseDesk());
         registry = ParamsRegistry(v.registry());
         yolo = v.yolo();
     }
 
-    /// @notice Add `amount` YOLO (pulled with transferFrom) to the bonus of an open task.
+    /// @notice Add `amount` $YOLO (pulled with transferFrom) to the bonus of an open task before its deadline. No
+    ///         limit on the bonus. The task's timers are played first
+    ///         (`poke`, like TaskVault.topUp): nothing gets into a task that is already decided or expired but not yet
+    ///         poked.
     function sweeten(uint256 taskId, uint256 amount) external {
         if (amount == 0) revert ZeroAmount();
-        if (vault.submitTerms(taskId, address(0)).status != TaskStatus.Open) revert TaskNotOpen();
+        if (vault.sweetener() != address(this)) revert NotBound();
+        vault.poke(taskId);
+        Task memory task = vault.getTask(taskId);
+        if (task.status != TaskStatus.Open || block.timestamp >= task.deadline) revert TaskNotOpen();
         uint256 bonus = bonusOf[taskId] + amount;
         bonusOf[taskId] = bonus;
         givenBy[taskId][msg.sender] += amount;
+        gave[taskId][msg.sender] = true;
         yolo.safeTransferFrom(msg.sender, address(this), amount);
         emit Sweetened(taskId, msg.sender, amount, bonus);
     }
 
-    /// @notice Announce taking back all you put on an open task: `withdraw` works from `NOTICE` after this call for
-    ///         `NOTICE_VALID`. Reverts while a submission is active, or while an earlier notice is still live: a
-    ///         standing notice cannot be renewed into an always-due one (audit round 2, finding 16).
-    function announceWithdraw(uint256 taskId) external {
-        uint256 given = givenBy[taskId][msg.sender];
-        if (given == 0) revert ZeroAmount();
-        if (vault.submitTerms(taskId, address(0)).busy) revert SubmissionActive();
-        uint64 existing = leavingAt[taskId][msg.sender];
-        if (existing != 0 && block.timestamp <= existing + NOTICE_VALID) revert NoticeLive(existing);
-        uint64 at = uint64(block.timestamp + NOTICE);
-        leavingAt[taskId][msg.sender] = at;
-        emit WithdrawAnnounced(taskId, msg.sender, given, at);
-    }
-
-    /// @notice The live notice of `who` on a task (zeros if none or expired): what he has on it, from when he may
-    ///         withdraw it and until when the notice holds.
-    function pendingWithdraw(uint256 taskId, address who)
-        external
-        view
-        returns (uint256 amount, uint64 from, uint64 until)
-    {
-        from = leavingAt[taskId][who];
-        if (from == 0 || block.timestamp > uint256(from) + NOTICE_VALID) return (0, 0, 0);
-        return (givenBy[taskId][who], from, uint64(from + NOTICE_VALID));
-    }
-
-    /// @notice Take back all you put on a task: after it expired or was unwound; while it is open with no active
-    ///         submission, once your notice is due (none needed past the deadline, when nobody can submit); or your
-    ///         share of the rest a capped `payout` returned. Never the part paid to the doer of an accepted submission.
+    /// @notice Take back all you put on a task once nobody can earn it: it expired or was unwound (or it is past its
+    ///         deadline with no submission in flight, which the vault turns into an expiry at the next call).
     function withdraw(uint256 taskId) external {
+        vault.poke(taskId);
         SubmitTerms memory t = vault.submitTerms(taskId, address(0));
-        uint256 given = givenBy[taskId][msg.sender];
-        uint256 left = bonusOf[taskId];
-        uint256 amount = given;
-        if (t.status == TaskStatus.Completed) {
-            uint256 base = returnBase[taskId];
-            if (base == 0) revert BonusLocked(); // not paid out yet, or all of it was the doer's
-            if (given == 0) revert ZeroAmount();
-            amount = Math.mulDiv(left, given, base); // the last one (given == base) takes all that is left
-            returnBase[taskId] = base - given;
-        } else if (t.status == TaskStatus.Open) {
-            if (t.busy) revert BonusLocked();
-            if (given == 0) revert ZeroAmount();
-            if (t.deadline == 0 || block.timestamp < t.deadline) _useNotice(taskId);
-        } else if (t.status == TaskStatus.Expired || t.status == TaskStatus.Unwound) {
-            if (given == 0) revert ZeroAmount();
-        } else {
-            revert BonusLocked();
-        }
+        bool free = t.status == TaskStatus.Expired || t.status == TaskStatus.Unwound
+            || (t.status == TaskStatus.Open && !t.busy && block.timestamp >= t.deadline);
+        if (!free) revert BonusLocked();
+        uint256 amount = givenBy[taskId][msg.sender];
+        if (amount == 0) revert ZeroAmount();
         givenBy[taskId][msg.sender] = 0;
-        if (leavingAt[taskId][msg.sender] != 0) delete leavingAt[taskId][msg.sender];
-        uint256 bonus = left - amount;
+        uint256 bonus = bonusOf[taskId] - amount;
         bonusOf[taskId] = bonus;
-        if (amount != 0) yolo.safeTransfer(msg.sender, amount);
+        yolo.safeTransfer(msg.sender, amount);
         emit BonusWithdrawn(taskId, msg.sender, amount, bonus);
     }
 
-    /// @notice Pay the bonus of a completed task to the doer of its accepted submission `subId` (anyone may call):
-    ///         all of it if the swarm confirmed that submission, otherwise up to the large threshold, the rest back to
-    ///         the sweeteners. Without a YOLO price (needed only for that cap) nothing moves (`PayoutDeferred`) until
-    ///         there is one, or until NO_PRICE_WAIT after the first such call: then all of it.
-    function payout(uint256 taskId, uint256 subId) external {
-        SubmitTerms memory t = vault.submitTerms(taskId, address(0));
-        if (t.status != TaskStatus.Completed) revert NotAccepted();
-        SubCore memory s = caseDesk.subCore(subId);
-        if (s.taskId != taskId || s.outcome != Outcome.Accepted) revert NotAccepted();
+    /// @notice Pay the bonus of a completed task (anyone): to the doer of its accepted submission, the NFT share and
+    ///         the burn by the reward's rule (see the contract notice).
+    function payout(uint256 taskId) external {
+        vault.poke(taskId); // an acceptance by timer counts without a separate poke
+        Task memory task = vault.getTask(taskId);
+        if (task.status != TaskStatus.Completed) revert NotAccepted();
         uint256 bonus = bonusOf[taskId];
-        if (bonus == 0 || returnBase[taskId] != 0) revert NothingToPay();
-        ParamsCore memory p = registry.core(t.version);
-        uint256 pay = bonus;
-        if (!_swarmConfirmed(subId, p.swarmTimeout)) {
-            (bool priced, uint256 cap) = _cap(p.priceOracle, p.largeRewardUsd);
-            if (!priced) {
-                // no price, no cap: the bonus waits for one instead of going back (swarm audit #6); anyone can
-                // make a price by sampling the pool, so only an outage of a week pays it in full
-                uint64 since = noPriceSince[taskId];
-                if (since == 0) noPriceSince[taskId] = since = uint64(block.timestamp);
-                if (block.timestamp < uint256(since) + NO_PRICE_WAIT) {
-                    emit PayoutDeferred(taskId, subId, uint64(since + NO_PRICE_WAIT));
-                    return;
-                }
-            } else if (cap < bonus) {
-                pay = cap;
-                returnBase[taskId] = bonus; // = the sum of givenBy on the task
-                emit BonusCapped(taskId, cap, bonus - cap);
-            }
+        if (bonus == 0) revert NothingToPay();
+        uint256 subId = task.activeSub; // the accepted submission (TaskVault keeps it on Completed)
+        Submission memory s = vault.getSubmission(subId);
+        if (s.outcome != Outcome.Accepted) revert NotAccepted();
+        ParamsCore memory p = registry.core(task.paramsVersion);
+        bonusOf[taskId] = 0;
+
+        uint256 fee = bonus * p.feeBps / BPS;
+        uint256 nftPart = bonus * p.nftFeeBps / BPS;
+        uint256 toVoters;
+        if (s.nftDecision == Verdict.Accept) {
+            toVoters = nftPart;
+            voterPool[taskId] = nftPart;
+            voterVotesLeft[taskId] = vault.getDispute(subId).votesAccept;
         }
-        bonusOf[taskId] = bonus - pay;
-        uint256 fee = pay * p.feeBps / BPS;
-        address treasury = registry.core(registry.currentVersion()).treasury;
-        if (pay != fee) yolo.safeTransfer(s.doer, pay - fee);
-        if (fee != 0) yolo.safeTransfer(treasury, fee);
-        emit BonusPaid(taskId, subId, s.doer, pay - fee, fee);
+        uint256 extra;
+        uint256 bps = vault.getSettlement(subId).stakeBps;
+        if (bps != 0) {
+            extra = bonus * bps / BPS;
+            if (extra > fee - nftPart) extra = fee - nftPart;
+        }
+        uint256 burned = fee - toVoters - extra;
+        uint256 toDoer = bonus - fee + extra;
+        yolo.safeTransfer(s.doer, toDoer);
+        if (burned != 0) yolo.safeTransfer(vault.burner(), burned);
+        emit BonusPaid(taskId, subId, s.doer, toDoer, toVoters, burned);
     }
 
-    /// @dev The YOLO worth `largeUsd` by `oracle` (18-decimal USD per whole token); `priced` false without a reliable
-    ///      price or if any oracle call fails.
-    function _cap(address oracle, uint256 largeUsd) private view returns (bool priced, uint256 cap) {
-        try IPriceOracle(oracle).hasPrice(address(yolo)) returns (bool ok) {
-            if (!ok) return (false, 0);
-        } catch {
-            return (false, 0);
-        }
-        try IPriceOracle(oracle).usdValue(address(yolo), 1e18) returns (uint256 usd) {
-            if (usd == 0) return (false, 0);
-            return (true, Math.mulDiv(largeUsd, 1e18, usd));
-        } catch {
-            return (false, 0);
-        }
-    }
-
-    /// @dev The latest swarm request of the submission is answered "yes", by an answer the CaseDesk counts (signed
-    ///      within the swarm timeout, delivered within SWARM_DELIVERY_GRACE after it).
-    function _swarmConfirmed(uint256 subId, uint256 swarmTimeout) private view returns (bool) {
-        bytes32 rid = ISweetenedCaseDesk(address(caseDesk)).getSubmission(subId).request;
-        if (rid == bytes32(0)) return false;
-        SwarmRequest memory r = vault.requests(rid);
-        uint256 deadline = uint256(r.askedAt) + swarmTimeout;
-        return r.answered && r.answer && r.subId == subId && r.answerTime <= deadline
-            && r.recordedAt <= deadline + SWARM_DELIVERY_GRACE;
-    }
-
-    function _useNotice(uint256 taskId) private view {
-        uint256 at = leavingAt[taskId][msg.sender];
-        if (at == 0 || block.timestamp > at + NOTICE_VALID) revert NoNotice();
-        if (block.timestamp < at) revert NoticeNotDue(uint64(at));
+    /// @notice An NFT voter's share of a paid-out bonus (anyone may trigger; money goes to `payTo`, the address the
+    ///         votes named), pro rata to its "accept" votes on the accepted submission. The last one takes the rest.
+    function claimVoter(uint256 taskId, address payTo) external {
+        uint256 subId = vault.getTask(taskId).activeSub;
+        (uint256 n,) = vault.votesOf(subId, payTo);
+        uint256 left = voterVotesLeft[taskId];
+        if (n == 0 || left == 0 || voterClaimed[taskId][payTo]) revert NothingToPay();
+        voterClaimed[taskId][payTo] = true;
+        uint256 pool = voterPool[taskId];
+        uint256 share = Math.mulDiv(pool, n, left);
+        voterPool[taskId] = pool - share;
+        voterVotesLeft[taskId] = left - n;
+        if (share != 0) yolo.safeTransfer(payTo, share);
+        emit VoterBonusClaimed(taskId, payTo, n, share);
     }
 }

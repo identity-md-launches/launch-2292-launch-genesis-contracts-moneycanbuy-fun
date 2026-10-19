@@ -6,10 +6,10 @@ import "../VaultTypes.sol";
 /// @title TextLib
 /// @notice The text rules of every user string the vault stores or sends to the swarm (pure, inlined into TextRules).
 library TextLib {
-    /// @dev Every user string is embedded verbatim into the swarm JSON body: 1..maxLen bytes of well-formed UTF-8 (no
-    ///      overlong forms, no surrogates), no quote, backslash, control character or DEL. Malformed text could make the
-    ///      Intake refuse the body, and a refusal counts as silence. Used for the condition, proofs, reasons, replies,
-    ///      the title and the doer note.
+    /// @dev Every user string is embedded verbatim into the swarm JSON body: 1..maxLen bytes of printable ASCII
+    ///      0x20..0x7e only (English only — no Cyrillic, CJK, emoji or any other byte >= 0x80),
+    ///      no quote, backslash or DEL. Malformed text could make the Intake refuse the body, and a refusal counts
+    ///      as silence. Used for the condition, proofs, reasons, replies, the title and the doer note.
     ///      Reads calldata directly and does no overflow checks: every index is below `len`, which calldata bounds.
     function validText(string calldata str, uint256 maxLen) internal pure returns (bool) {
         uint256 len = bytes(str).length;
@@ -32,37 +32,11 @@ library TextLib {
                         i += 32;
                         continue;
                     }
+                    return false; // some byte of this word is >= 0x80: not plain ASCII
                 }
                 uint256 c = _byteAt(at, i);
-                if (c < 0x80) {
-                    if (c < 0x20 || c == 0x22 || c == 0x5c || c == 0x7f) return false;
-                    ++i;
-                    continue;
-                }
-                uint256 n; // continuation bytes
-                uint256 lo = 0x80;
-                uint256 hi = 0xbf; // allowed range of the first continuation byte
-                if (c >= 0xc2 && c <= 0xdf) {
-                    n = 1;
-                } else if (c >= 0xe0 && c <= 0xef) {
-                    n = 2;
-                    if (c == 0xe0) lo = 0xa0; // overlong
-                    if (c == 0xed) hi = 0x9f; // surrogates
-                } else if (c >= 0xf0 && c <= 0xf4) {
-                    n = 3;
-                    if (c == 0xf0) lo = 0x90; // overlong
-                    if (c == 0xf4) hi = 0x8f; // above U+10FFFF
-                } else {
-                    return false;
-                }
-                if (i + n >= len) return false;
-                uint256 c1 = _byteAt(at, i + 1);
-                if (c1 < lo || c1 > hi) return false;
-                for (uint256 k = 2; k <= n; ++k) {
-                    uint256 ck = _byteAt(at, i + k);
-                    if (ck < 0x80 || ck > 0xbf) return false;
-                }
-                i += n + 1;
+                if (c >= 0x80 || c < 0x20 || c == 0x22 || c == 0x5c || c == 0x7f) return false;
+                ++i;
             }
         }
         return true;
@@ -106,22 +80,73 @@ library TextLib {
         if (len == scheme || !_linkTail(b, scheme)) revert BadCover();
     }
 
-    /// @dev A submission's proofUri in the form its task's proof type requires (the length and UTF-8 rule is
-    ///      `checkText`, checked before):
+    /// @dev Evidence.screenshotUrl: empty (none) or a link on a host of the allowlist (`checkHost`, HostNotAllowed
+    ///      otherwise), then link characters (no space, no quote/backslash/angle bracket), at most
+    ///      MAX_SCREENSHOT_URL_BYTES (BadEvidence otherwise).
+    function checkScreenshotUrl(string calldata url) internal pure {
+        bytes calldata b = bytes(url);
+        uint256 len = b.length;
+        if (len == 0) return;
+        checkHost(b);
+        if (len > MAX_SCREENSHOT_URL_BYTES) revert BadEvidence();
+        if (len == 8 || !_linkTail(b, 8)) revert BadEvidence();
+    }
+
+    /// @dev A submission's proofUri in the form its task's proof type requires (the length and printable-ASCII rule is
+    ///      `checkText`, checked before). Every link proof is first held to the host allowlist (`checkHost`,
+    ///      HostNotAllowed), then to its form (BadProof):
     ///      x_post      https://[www.|mobile.](x.com|twitter.com)/<user 1-15 [A-Za-z0-9_]>/status/<1-19 digits>
     ///                  [then ? or / and link characters]
-    ///      video       https://[www.|m.](youtube.com|youtu.be|kick.com|twitch.tv|clips.twitch.tv)/<path>, or an
-    ///                  x_post link (a video posted on X)
+    ///      video       https://[www.|m.](youtube.com|youtu.be)/<path>, or an x_post link (a video posted on X)
     ///      onchain_tx  0x + 64 hex digits (a transaction hash on Ethereum mainnet)
-    ///      link        https://<link characters>
+    ///      link        https://<allowlisted host>[/?#]<link characters>
     function checkProof(string calldata proof, uint8 proofType) internal pure {
         bytes calldata b = bytes(proof);
         bool ok;
-        if (proofType == PROOF_X_POST) ok = _isXPost(b);
-        else if (proofType == PROOF_VIDEO) ok = _isVideo(b) || _isXPost(b);
-        else if (proofType == PROOF_ONCHAIN_TX) ok = _isTxHash(b);
-        else ok = b.length > 8 && _startsWith(b, 0, "https://") && _linkTail(b, 8);
+        if (proofType == PROOF_ONCHAIN_TX) {
+            ok = _isTxHash(b);
+        } else {
+            checkHost(b);
+            if (proofType == PROOF_X_POST) ok = _isXPost(b);
+            else if (proofType == PROOF_VIDEO) ok = _isVideo(b) || _isXPost(b);
+            else ok = b.length > 8 && _linkTail(b, 8);
+        }
         if (!ok) revert BadProof(proofType);
+    }
+
+    /// @dev Proof and screenshot links (nothing else can even be sent): `https://`, at most
+    ///      MAX_LINK_BYTES, and a host of the allowlist below. The host runs from right after `https://` to the first
+    ///      `/`, `?`, `#` or the end; one `www.`, `m.` or `mobile.` prefix is dropped; the rest must equal a listed
+    ///      host byte for byte, so a port (colon), userinfo (at sign), a space, upper case or another domain around a
+    ///      listed name never matches.
+    function checkHost(bytes calldata b) internal pure {
+        uint256 len = b.length;
+        if (len > MAX_LINK_BYTES || !_startsWith(b, 0, "https://")) revert HostNotAllowed();
+        uint256 at = 8;
+        if (_startsWith(b, at, "www.")) at += 4;
+        else if (_startsWith(b, at, "mobile.")) at += 7;
+        else if (_startsWith(b, at, "m.")) at += 2;
+        uint256 end = at;
+        while (end < len) {
+            bytes1 c = b[end];
+            if (c == "/" || c == "?" || c == "#") break;
+            ++end;
+        }
+        if (!_listed(keccak256(b[at:end]))) revert HostNotAllowed();
+    }
+
+    function _listed(bytes32 h) private pure returns (bool) {
+        // HOSTS-BEGIN
+        return h == keccak256("x.com") || h == keccak256("twitter.com") || h == keccak256("pbs.twimg.com")
+            || h == keccak256("youtube.com") || h == keccak256("youtu.be") || h == keccak256("tiktok.com")
+            || h == keccak256("instagram.com") || h == keccak256("drive.google.com")
+            || h == keccak256("lh3.googleusercontent.com") || h == keccak256("photos.google.com")
+            || h == keccak256("imgur.com") || h == keccak256("i.imgur.com") || h == keccak256("t.me")
+            || h == keccak256("ibb.co") || h == keccak256("i.ibb.co") || h == keccak256("reddit.com")
+            || h == keccak256("i.redd.it") || h == keccak256("dropbox.com") || h == keccak256("arweave.net")
+            || h == keccak256("etherscan.io") || h == keccak256("sepolia.etherscan.io") || h == keccak256("github.com")
+            || h == keccak256("kick.com") || h == keccak256("twitch.tv") || h == keccak256("clips.twitch.tv");
+        // HOSTS-END
     }
 
     /// @dev Link characters from `from` to the end: printable ASCII without space, quotes, backslash or angle
@@ -176,12 +201,9 @@ library TextLib {
     }
 
     function _isVideo(bytes calldata b) private pure returns (bool) {
-        bytes[] memory hosts = new bytes[](5);
+        bytes[] memory hosts = new bytes[](2);
         hosts[0] = "youtube.com";
         hosts[1] = "youtu.be";
-        hosts[2] = "kick.com";
-        hosts[3] = "twitch.tv";
-        hosts[4] = "clips.twitch.tv";
         uint256 i = _afterHost(b, hosts);
         return i != 0 && i < b.length && _linkTail(b, i);
     }
@@ -202,7 +224,7 @@ library TextLib {
 
 /// @title TextRules
 /// @notice Stateless helper: the desks check user strings here (STATICCALL) instead of carrying the code themselves
-///         (code size limit). Reverts carry the vault's own errors (BadCover, BadProof).
+///         (code size limit). Reverts carry the vault's own errors (BadCover, BadProof, BadEvidence, HostNotAllowed).
 contract TextRules {
     function validText(string calldata str, uint256 maxLen) external pure returns (bool) {
         return TextLib.validText(str, maxLen);
@@ -214,5 +236,9 @@ contract TextRules {
 
     function checkProof(string calldata proof, uint8 proofType) external pure {
         TextLib.checkProof(proof, proofType);
+    }
+
+    function checkScreenshotUrl(string calldata url) external pure {
+        TextLib.checkScreenshotUrl(url);
     }
 }

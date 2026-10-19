@@ -9,22 +9,26 @@ import {FullMath} from "v4-core/src/libraries/FullMath.sol";
 import {LaunchPlan, LocalFactory, IContractFactory} from "../../script/LaunchPlan.sol";
 import {IProjectFactory} from "../fork/LaunchRehearsal.fork.t.sol";
 import {ReviewLaunchForkBase} from "../fork/LaunchForkBase.sol";
-import {Base} from "../Base.t.sol";
+import {Base, Ballot} from "../Base.t.sol";
 
 import {TaskVault} from "../../src/TaskVault.sol";
 import {YoloSweetener} from "../../src/YoloSweetener.sol";
 import {ProtocolDirectory} from "../../src/ProtocolDirectory.sol";
 import {HiddenList} from "../../src/HiddenList.sol";
+import {YoloPredict} from "../../src/YoloPredict.sol";
+import {YoloLockHub} from "../../src/YoloLockHub.sol";
+import {BuybackBurner} from "../../src/BuybackBurner.sol";
 import {DareTrophy} from "../../src/DareTrophy.sol";
+import {TrophyCatalog} from "../../src/TrophyCatalog.sol";
 import {ParamsRegistry} from "../../src/ParamsRegistry.sol";
 import {CaseDesk} from "../../src/desks/CaseDesk.sol";
 import {DisputeDesk} from "../../src/desks/DisputeDesk.sol";
 import {TextRules} from "../../src/helpers/TextRules.sol";
 import {SwarmQuestionBuilder} from "../../src/helpers/SwarmQuestion.sol";
 import {AttestationChecker} from "../../src/helpers/AttestationChecker.sol";
-import {BallotChecker, Ballot} from "../../src/libraries/VoteLib.sol";
+import {VotePower} from "../../src/VotePower.sol";
 import {UniswapV3SwapAdapter} from "../../src/adapters/UniswapV3SwapAdapter.sol";
-import {ChainlinkUniV3PriceOracle} from "../../src/oracles/ChainlinkUniV3PriceOracle.sol";
+import {DevPrices} from "../../src/DevPrices.sol";
 import {YoloToken} from "../../src/token/YoloToken.sol";
 import {ProjectVesting} from "../../src/token/ProjectVesting.sol";
 import {NftGate} from "../../src/token/NftGate.sol";
@@ -32,16 +36,16 @@ import {YoloSplitter} from "../../src/token/YoloSplitter.sol";
 import {IncentivesVesting, DevVesting, TeamVesting, TreasuryVesting} from "../../src/token/Vestings.sol";
 import {IIntake} from "../../src/interfaces/IIntake.sol";
 import "../../src/VaultTypes.sol";
+import {Params} from "../../src/VaultParams.sol";
 
-/// @dev The launch: docs/LAUNCH-TASK.md and the fork rehearsal against the code. The static tests hold the doc to
-///      the plan (they fail when the two drift apart). Non-fork part first; the fork part (ReviewLaunchFork) skips
-///      without FORK_URL, like test/fork/*.
+/// @dev Launch review: docs/LAUNCH-TASK.md and the fork rehearsal against
+///      the code. The static tests hold the doc to the plan (they fail when the two drift apart). Non-fork part first; the fork part (ReviewLaunchFork) skips without FORK_URL, like test/fork/*.
 contract ReviewLaunchStatic is Test {
     uint256 constant EIP170 = 24_576;
     uint256 constant EIP3860 = 49_152;
 
-    // the project's wallets as the doc writes them (LaunchPlan.projectOwners). The owner is a single project key
-    // (EOA): the treasury wallet owns the registry and the directory and takes the tax
+    // the project's wallets as the doc writes them (LaunchPlan.projectOwners); no Safe: the
+    // treasury wallet owns the registry and the directory and takes the tax
     address constant TREASURY = LaunchPlan.PROJECT_TREASURY;
     address constant OWNER = TREASURY;
     address constant INCENTIVES = LaunchPlan.PROJECT_INCENTIVES;
@@ -52,47 +56,59 @@ contract ReviewLaunchStatic is Test {
 
     // ---- docs/LAUNCH-TASK.md as written: the constructorArgs lists copied verbatim. Change one, change both.
     string constant DOC0_GATE =
-        '["0x0000ec93127baa929e58e97dd0095a2bfb38ec1d", "0x00000000000000447e69651d841bd8d104bed493"]';
-    string constant DOC0_INCENTIVES = '["<INCENTIVES_WALLET>"]';
-    string constant DOC0_DEV = '["<DEV_WALLET>"]';
-    string constant DOC0_TEAM = '["<TEAM_WALLET>"]';
-    string constant DOC0_TREASURY = '["<TREASURY_WALLET>"]';
+        '["0x0000ec93127baa929e58e97dd0095a2bfb38ec1d", "0x8Ad18E99F4C8d8406f9Ba8899CF308000518A981"]';
+    string constant DOC0_INCENTIVES = '["0x7085193516EDc587fAebFF7a48548eAC8db5fAb5"]';
+    string constant DOC0_DEV = '["0x3c587Eff6c96eAcF7E3dcC2CFf6416161386E48C"]';
+    string constant DOC0_TEAM = '["0x153D12cc398d79A99B781B23DB6399556b84ca76"]';
+    string constant DOC0_TREASURY = '["0x8Ad18E99F4C8d8406f9Ba8899CF308000518A981"]';
     string constant DOC0_SPLITTER =
-        '["$contract:IncentivesVesting", "$contract:DevVesting", "$contract:TeamVesting", "$contract:TreasuryVesting", "<STABILIZER_WALLET>"]';
-    string constant DOC1_TOKEN = '["$poolManager", "<NFT_GATE>", "<TREASURY_WALLET>"]';
+        '["$contract:IncentivesVesting", "$contract:DevVesting", "$contract:TeamVesting", "$contract:TreasuryVesting", "0xaaB0269b956bd5F97B44529569b042e7BD72B508"]';
+    string constant DOC1_TOKEN =
+        '["$poolManager", "<NFT_GATE>", "0x8Ad18E99F4C8d8406f9Ba8899CF308000518A981", "<OPEN_AT>"]';
+    // a stand-in for <OPEN_AT> (unix seconds: fixed when the launch text is filled in)
+    uint256 constant OPEN_AT = 1_800_003_600;
     string constant DOC1_POOL_BPS = "1500";
     string constant DOC1_TOTAL_SUPPLY = "1000000000000000000000000000";
     string constant DOC1_INITIAL_MCAP_WEI = "15000000000000000000000";
-    string constant DOC1_ORACLE =
-        '["0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7", "0x5f4ec3df9cbd43714fe2740f5e3616155c5b8419", "0x8fffffd4afb6115b954bd326cbe7b4ba576818f6", "0x894d4e6d3d2abc64fc0de0e4e2ea63a93bc9c520", "1800", "7200", "172800", "$token", "0x000000000004444c5dc75cb358380d2e3de08a90", "0x784ff9a3ac5d88a30bfff6f7f2a270161fbe6000", "12500", "60", "10000000000000000", "15000000000000"]';
+    string constant DOC1_PRICES =
+        '["0x3c587Eff6c96eAcF7E3dcC2CFf6416161386E48C", "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7", "$token", "1000000000000000", "2389244350450000000000", "5247665725934671441"]';
     string constant DOC1_ADAPTER =
         '["0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"]';
     string constant DOC1_REGISTRY =
-        '["<TREASURY_WALLET>", "0xa43e6f75ee006411f79ac1c84120606c2330de82", "$contract:ChainlinkUniV3PriceOracle", "$contract:UniswapV3SwapAdapter", "0x0000ec93127baa929e58e97dd0095a2bfb38ec1d", "0x00000000000000447e69651d841bd8d104bed493", "<TREASURY_WALLET>", "0x5598aa9146215bc13eb26f2c692ad1461fd32982"]';
+        '["0x8Ad18E99F4C8d8406f9Ba8899CF308000518A981", "0xa43e6f75ee006411f79ac1c84120606c2330de82", "$contract:DevPrices", "$contract:UniswapV3SwapAdapter", "0x0000ec93127baa929e58e97dd0095a2bfb38ec1d", "0x00000000000000447e69651d841bd8d104bed493", "0x8Ad18E99F4C8d8406f9Ba8899CF308000518A981", "0x5598aa9146215bc13eb26f2c692ad1461fd32982"]';
     string constant DOC1_ATTESTATION = '["$contract:ParamsRegistry"]';
+    string constant DOC1_VOTE_POWER =
+        '["0x0000ec93127baa929e58e97dd0095a2bfb38ec1d", "0x00000000000000447e69651d841bd8d104bed493"]';
+    string constant DOC1_BURNER =
+        '["$token", "0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7", "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "$contract:DevPrices", "0x027e55f01e8cf808e5d2a2ad68e5e7f67fd6df6e"]';
+    string constant DOC2_HUB = '["<YOLO>"]';
     string constant DOC2_CASE =
-        '["<PARAMS_REGISTRY>", "0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7", "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "<TEXT_RULES>", "<SWARM_QUESTION_BUILDER>"]';
+        '["<PARAMS_REGISTRY>", "0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7", "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "<TEXT_RULES>", "<SWARM_QUESTION_BUILDER>", "<YOLO>", "$contract:YoloLockHub"]';
     string constant DOC2_DISPUTE =
-        '["<PARAMS_REGISTRY>", "0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7", "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "<TEXT_RULES>", "<BALLOT_CHECKER>"]';
+        '["<PARAMS_REGISTRY>", "0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7", "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "<TEXT_RULES>", "<VOTE_POWER>", "<YOLO>", "$contract:YoloLockHub"]';
     string constant DOC2_VAULT =
-        '["<PARAMS_REGISTRY>", "0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7", "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "<YOLO>", "<ATTESTATION_CHECKER>", "<TEXT_RULES>", "$contract:CaseDesk", "$contract:DisputeDesk"]';
+        '["<PARAMS_REGISTRY>", "0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7", "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "<YOLO>", "<ATTESTATION_CHECKER>", "<TEXT_RULES>", "$contract:CaseDesk", "$contract:DisputeDesk", "<BUYBACK_BURNER>"]';
     string constant DOC3_SWEETENER = '["<TASK_VAULT>"]';
-    string constant DOC3_TROPHY = '["<TASK_VAULT>", "1500000000000000000", "10000000000000000000000"]';
+    string constant DOC3_TROPHY = '["<TASK_VAULT>", "$contract:TrophyCatalog"]'; // a fixed 7,777 YOLO, no price arguments
+    string constant DOC3_CATALOG = '["0x8Ad18E99F4C8d8406f9Ba8899CF308000518A981"]'; // trophy designs, the project wallet
     string constant DOC3_DIRECTORY =
-        '["<TREASURY_WALLET>", "<TASK_VAULT>", "$contract:YoloSweetener", "$contract:DareTrophy", "<CORE_BLOCK>"]';
+        '["0x8Ad18E99F4C8d8406f9Ba8899CF308000518A981", "<TASK_VAULT>", "$contract:YoloSweetener", "$contract:DareTrophy", "<CORE_BLOCK>"]';
     string constant DOC3_HIDDENLIST =
-        '["<TREASURY_WALLET>", "0x0000ec93127baa929e58e97dd0095a2bfb38ec1d", "0x00000000000000447e69651d841bd8d104bed493"]';
-    // the per-contract room the doc states (EIP-170 margin, bytes)
-    // after the swarm audit fixes: DisputeDesk 2_179 -> 1_896, TaskVault 4_732 -> 3_992, CaseDesk 4_087 -> 4_009,
-    // YoloSweetener 17_694 -> 17_226, ParamsRegistry 8_645 -> 8_435
-    uint256 constant DOC_MARGIN_DISPUTE = 1_896; // 2_050 before the C-02 (no instant decision) and C-01 (doer) fixes
-    uint256 constant DOC_MARGIN_VAULT = 3_853; // 3_992 before audit round 2 (announceWithdraw gained checks)
-    uint256 constant DOC_MARGIN_CASE = 4_009; // 3_691 before the C-02 fix (CaseDesk.decide removed)
-    uint256 constant DOC_MARGIN_SWEETENER = 16_992; // 17_226 before audit round 2 (announceWithdraw gained checks)
-    uint256 constant DOC_MARGIN_TROPHY = 12_163;
+        '["0x8Ad18E99F4C8d8406f9Ba8899CF308000518A981", "0x0000ec93127baa929e58e97dd0095a2bfb38ec1d", "0x00000000000000447e69651d841bd8d104bed493"]';
+    string constant DOC3_PREDICT = '["<TASK_VAULT>", "1000000000000000000"]'; // no sweetener arg (no exclusion)
+    // the per-contract room the doc states (EIP-170 margin, bytes); every margin is re-measured with
+    // `forge build --sizes` whenever the code changes (via-ir shifts untouched contracts too: whole-program opt).
+    uint256 constant DOC_MARGIN_DISPUTE = 3_311; // vote by NFT ids; quote views in CaseDesk
+    uint256 constant DOC_MARGIN_VAULT = 3_997; // top-ups join the pot at once, `potOf`
+    uint256 constant DOC_MARGIN_CASE = 4_805; // the whole pot on acceptance (`potOf`), no stake threshold, power vs the author's reward only
+    uint256 constant DOC_MARGIN_HUB = 21_426; // YoloLockHub (a lock with checkpoints and epochs), launch 2
+    uint256 constant DOC_MARGIN_SWEETENER = 17_847;
+    uint256 constant DOC_MARGIN_TROPHY = 12_830;
     uint256 constant DOC_MARGIN_DIRECTORY = 20_030;
-    uint256 constant DOC_MARGIN_HIDDENLIST = 20_815; // 21_451 before audit round 2; the site's hide list, launch 3's fourth contract
-    uint256 constant DOC_MARGIN_SUPPORT_MIN = 8_435; // ParamsRegistry
+    uint256 constant DOC_MARGIN_HIDDENLIST = 20_787;
+    uint256 constant DOC_MARGIN_CATALOG = 20_348;
+    uint256 constant DOC_MARGIN_PREDICT = 18_611;
+    uint256 constant DOC_MARGIN_SUPPORT_MIN = 11_023; // ParamsRegistry
 
     /// @dev placeholder / factory reference of the doc -> the address the plan gives it
     mapping(string => address) internal resolved;
@@ -101,21 +117,12 @@ contract ReviewLaunchStatic is Test {
         return LaunchPlan.projectOwners();
     }
 
-    /// @dev the doc writes the project's wallets as placeholders; they resolve to LaunchPlan.projectOwners()
-    function _resolveOwners() internal {
-        resolved["<TREASURY_WALLET>"] = TREASURY;
-        resolved["<INCENTIVES_WALLET>"] = INCENTIVES;
-        resolved["<STABILIZER_WALLET>"] = STABILIZER;
-        resolved["<DEV_WALLET>"] = DEV;
-        resolved["<TEAM_WALLET>"] = TEAM;
-    }
-
     function _plan1(LocalFactory f)
         internal
         view
         returns (bytes[] memory codes, bytes32[] memory names, LaunchPlan.Support memory s, LaunchPlan.Genesis memory g)
     {
-        // launch 0 holds the gate and the splitter (remainderTo must be a fixed address), launch 1 has 7 contracts
+        // launch 0 holds the gate and the splitter (remainderTo must be a fixed address), launch 1 has 8 contracts
         (,, g) = LaunchPlan.genesisLaunch(f, 0, _owners());
         (codes, names, s) =
             LaunchPlan.support(f, 1, LaunchPlan.mainnet(OWNER, TREASURY), LaunchPlan.yoloPool(YOLO_PLACEHOLDER));
@@ -154,14 +161,19 @@ contract ReviewLaunchStatic is Test {
         address[] memory deployed0 = f.launchContracts(0, codes0);
         (bytes[] memory codes1, bytes32[] memory names1, LaunchPlan.Support memory s,) = _plan1(f);
         f.launchContracts(1, codes1);
-        address[13] memory a = [
-            s.priceOracle,
+        // TaskVault.cancelTask accepts only the DevPrices owner = the dev wallet, not the treasury
+        assertEq(DevPrices(s.devPrices).owner(), LaunchPlan.PROJECT_DEV, "DevPrices owner = the dev wallet");
+        assertTrue(LaunchPlan.PROJECT_DEV != OWNER, "the dev wallet is not the parameter owner");
+        assertEq(BuybackBurner(payable(s.burner)).dev(), LaunchPlan.PROJECT_DEV, "burner: the same dev wallet");
+        address[14] memory a = [
+            s.devPrices,
             s.swapAdapter,
             s.registry,
             s.textRules,
             s.questionBuilder,
-            s.ballotChecker,
+            s.votePower,
             s.attestationChecker,
+            s.burner,
             deployed0[0],
             deployed0[1],
             deployed0[2],
@@ -171,26 +183,26 @@ contract ReviewLaunchStatic is Test {
         ];
         assertEq(deployed0[5], g.splitter);
         uint256 supportMin = type(uint256).max;
-        for (uint256 i; i < 13; ++i) {
-            string memory name = i < 7
+        for (uint256 i; i < 14; ++i) {
+            string memory name = i < 8
                 ? string(abi.encodePacked(names1[i]))
-                : string.concat(string(abi.encodePacked(names0[i - 7])), " (launch 0)");
+                : string.concat(string(abi.encodePacked(names0[i - 8])), " (launch 0)");
             console.log(name, a[i].code.length, "runtime, margin", EIP170 - a[i].code.length);
-            assertLt(i < 7 ? codes1[i].length : codes0[i - 7].length, EIP3860, "initcode limit");
+            assertLt(i < 8 ? codes1[i].length : codes0[i - 8].length, EIP3860, "initcode limit");
             if (EIP170 - a[i].code.length < supportMin) supportMin = EIP170 - a[i].code.length;
         }
-        bytes memory tokenCode = LaunchPlan.yoloTokenCode(g.gate, OWNER);
+        bytes memory tokenCode = LaunchPlan.yoloTokenCode(g.gate, OWNER, block.timestamp + 1 days);
         address token;
         assembly ("memory-safe") {
             token := create(0, add(tokenCode, 32), mload(tokenCode))
         }
         console.log("YoloToken", token.code.length, "runtime, margin", EIP170 - token.code.length);
         if (EIP170 - token.code.length < supportMin) supportMin = EIP170 - token.code.length;
-        assertEq(supportMin, DOC_MARGIN_SUPPORT_MIN, "doc: launches 0 and 1 have >= 8,435 bytes (ParamsRegistry)");
+        assertEq(supportMin, DOC_MARGIN_SUPPORT_MIN, "doc: launches 0 and 1 have >= DOC_MARGIN_SUPPORT_MIN bytes (ParamsRegistry)");
         (bytes[] memory codes2, bytes32[] memory names2, address[] memory core) =
             LaunchPlan.core(f, 2, s, LaunchPlan.IMD, LaunchPlan.USDC, token);
         f.launchContracts(2, codes2);
-        for (uint256 i; i < 3; ++i) {
+        for (uint256 i; i < 4; ++i) {
             console.log(
                 string(abi.encodePacked(names2[i])),
                 core[i].code.length,
@@ -199,25 +211,28 @@ contract ReviewLaunchStatic is Test {
             );
             assertLt(codes2[i].length, EIP3860, "initcode limit");
         }
-        assertEq(EIP170 - core[0].code.length, DOC_MARGIN_CASE, "doc: CaseDesk margin");
-        assertEq(EIP170 - core[1].code.length, DOC_MARGIN_DISPUTE, "doc: DisputeDesk margin");
-        assertEq(EIP170 - core[2].code.length, DOC_MARGIN_VAULT, "doc: TaskVault margin");
-        (bytes[] memory codes3, bytes32[] memory names3, address[] memory extra) = LaunchPlan.extras(f, 3, core[2], OWNER, 1);
+        assertEq(EIP170 - core[LaunchPlan.CORE_HUB].code.length, DOC_MARGIN_HUB, "doc: YoloLockHub margin");
+        assertEq(EIP170 - core[LaunchPlan.CORE_CASE].code.length, DOC_MARGIN_CASE, "doc: CaseDesk margin");
+        assertEq(EIP170 - core[LaunchPlan.CORE_DISPUTE].code.length, DOC_MARGIN_DISPUTE, "doc: DisputeDesk margin");
+        assertEq(EIP170 - core[LaunchPlan.CORE_VAULT].code.length, DOC_MARGIN_VAULT, "doc: TaskVault margin");
+        (bytes[] memory codes3, bytes32[] memory names3, address[] memory extra) =
+            LaunchPlan.extras(f, 3, core[LaunchPlan.CORE_VAULT], OWNER, 1);
         f.launchContracts(3, codes3);
-        for (uint256 i; i < 4; ++i) {
+        for (uint256 i; i < 6; ++i) {
             console.log(string(abi.encodePacked(names3[i])), extra[i].code.length, "runtime, margin", EIP170 - extra[i].code.length);
             assertLt(codes3[i].length, EIP3860, "initcode limit");
         }
         assertEq(EIP170 - extra[0].code.length, DOC_MARGIN_SWEETENER, "doc: YoloSweetener margin");
-        assertEq(EIP170 - extra[1].code.length, DOC_MARGIN_TROPHY, "doc: DareTrophy margin");
-        assertEq(EIP170 - extra[2].code.length, DOC_MARGIN_DIRECTORY, "doc: ProtocolDirectory margin");
-        assertEq(EIP170 - extra[3].code.length, DOC_MARGIN_HIDDENLIST, "doc: HiddenList margin");
+        assertEq(EIP170 - extra[1].code.length, DOC_MARGIN_CATALOG, "doc: TrophyCatalog margin");
+        assertEq(EIP170 - extra[2].code.length, DOC_MARGIN_TROPHY, "doc: DareTrophy margin");
+        assertEq(EIP170 - extra[3].code.length, DOC_MARGIN_DIRECTORY, "doc: ProtocolDirectory margin");
+        assertEq(EIP170 - extra[4].code.length, DOC_MARGIN_HIDDENLIST, "doc: HiddenList margin");
+        assertEq(EIP170 - extra[5].code.length, DOC_MARGIN_PREDICT, "doc: YoloPredict margin");
     }
 
     /// Launch 0 of the doc (NftGate, four vestings, YoloSplitter) = LaunchPlan.genesisLaunch, byte for
     /// byte.
     function test_L0_docLaunch0Args_matchPlan() public {
-        _resolveOwners();
         LocalFactory f = new LocalFactory();
         (bytes[] memory plan, bytes32[] memory names, LaunchPlan.Genesis memory g) =
             LaunchPlan.genesisLaunch(f, 0, _owners());
@@ -239,99 +254,111 @@ contract ReviewLaunchStatic is Test {
         assertEq(_docCode(type(YoloSplitter).creationCode, DOC0_SPLITTER), plan[5], "YoloSplitter");
     }
 
-    /// Launch 1 of the doc (token, economics, 7 contracts) = LaunchPlan.yoloTokenCode / support, byte for byte, with
+    /// Launch 1 of the doc (token, economics, 8 contracts) = LaunchPlan.yoloTokenCode / support, byte for byte, with
     /// $token, $contract:X and the owner's placeholders resolved to the plan's addresses.
     function test_L2_docLaunch1Args_matchPlan() public {
-        _resolveOwners();
         LocalFactory f = new LocalFactory();
         (bytes[] memory plan, bytes32[] memory names, LaunchPlan.Support memory s, LaunchPlan.Genesis memory g) =
             _plan1(f);
-        assertEq(plan.length, 7, "doc: 7 contracts");
+        assertEq(plan.length, 8, "doc: 8 contracts (the factory's maximum)");
         resolved["$poolManager"] = LaunchPlan.POOL_MANAGER;
         resolved["<NFT_GATE>"] = g.gate;
+        resolved["<OPEN_AT>"] = address(uint160(OPEN_AT)); // an integer placeholder, encoded as a word
         assertEq(
-            _docCode(type(YoloToken).creationCode, DOC1_TOKEN), LaunchPlan.yoloTokenCode(g.gate, OWNER), "YoloToken"
+            _docCode(type(YoloToken).creationCode, DOC1_TOKEN),
+            LaunchPlan.yoloTokenCode(g.gate, OWNER, OPEN_AT),
+            "YoloToken"
         );
         assertEq(vm.parseUint(DOC1_POOL_BPS), LaunchPlan.YOLO_POOL_BPS, "poolBps");
         assertEq(vm.parseUint(DOC1_TOTAL_SUPPLY), LaunchPlan.YOLO_SUPPLY, "totalSupply");
         assertEq(vm.parseUint(DOC1_INITIAL_MCAP_WEI), LaunchPlan.YOLO_OPENING_MCAP_IMD, "initialMarketCapWei");
 
         resolved["$token"] = YOLO_PLACEHOLDER;
-        resolved["$contract:ChainlinkUniV3PriceOracle"] = s.priceOracle;
+        resolved["$contract:DevPrices"] = s.devPrices;
         resolved["$contract:UniswapV3SwapAdapter"] = s.swapAdapter;
         resolved["$contract:ParamsRegistry"] = s.registry;
-        string[7] memory docNames = [
-            "ChainlinkUniV3PriceOracle",
+        string[8] memory docNames = [
+            "DevPrices",
             "UniswapV3SwapAdapter",
             "ParamsRegistry",
             "TextRules",
             "SwarmQuestionBuilder",
-            "BallotChecker",
-            "AttestationChecker"
+            "VotePower",
+            "AttestationChecker",
+            "BuybackBurner"
         ];
-        for (uint256 i; i < 7; ++i) {
+        for (uint256 i; i < 8; ++i) {
             assertEq(names[i], bytes32(bytes(docNames[i])), "doc order and names");
         }
-        assertEq(_docCode(type(ChainlinkUniV3PriceOracle).creationCode, DOC1_ORACLE), plan[0], "oracle (15 args)");
+        assertEq(_docCode(type(DevPrices).creationCode, DOC1_PRICES), plan[0], "DevPrices (7 args)");
         assertEq(_docCode(type(UniswapV3SwapAdapter).creationCode, DOC1_ADAPTER), plan[1], "adapter");
         assertEq(_docCode(type(ParamsRegistry).creationCode, DOC1_REGISTRY), plan[2], "registry");
         assertEq(type(TextRules).creationCode, plan[3], "TextRules");
         assertEq(type(SwarmQuestionBuilder).creationCode, plan[4], "SwarmQuestionBuilder");
-        assertEq(type(BallotChecker).creationCode, plan[5], "BallotChecker");
+        assertEq(_docCode(type(VotePower).creationCode, DOC1_VOTE_POWER), plan[5], "VotePower (nft, delegate.xyz)");
         assertEq(_docCode(type(AttestationChecker).creationCode, DOC1_ATTESTATION), plan[6], "AttestationChecker");
+        assertEq(_docCode(type(BuybackBurner).creationCode, DOC1_BURNER), plan[7], "BuybackBurner (5 args: yolo, imd, usdc, DevPrices, buyback wallet)");
     }
 
-    /// Launch 2 of the doc (CaseDesk, DisputeDesk, TaskVault with `yolo` 4th) = LaunchPlan.core, byte for byte.
+    /// Launch 2 of the doc (YoloLockHub, CaseDesk, DisputeDesk with the hub, TaskVault with `yolo` 4th and the burner
+    /// last) = LaunchPlan.core, byte for byte.
     function test_L3_docLaunch2Args_matchPlan() public {
-        _resolveOwners();
         LocalFactory f = new LocalFactory();
         (,, LaunchPlan.Support memory s,) = _plan1(f);
         (bytes[] memory plan, bytes32[] memory names, address[] memory addrs) =
             LaunchPlan.core(f, 2, s, LaunchPlan.IMD, LaunchPlan.USDC, YOLO_PLACEHOLDER);
-        assertEq(names[0], bytes32("CaseDesk"));
-        assertEq(names[1], bytes32("DisputeDesk"));
-        assertEq(names[2], bytes32("TaskVault"));
-        assertEq(names.length, 3);
+        assertEq(names[0], bytes32("YoloLockHub"));
+        assertEq(names[1], bytes32("CaseDesk"));
+        assertEq(names[2], bytes32("DisputeDesk"));
+        assertEq(names[3], bytes32("TaskVault"));
+        assertEq(names.length, 4);
         resolved["<PARAMS_REGISTRY>"] = s.registry;
         resolved["<TEXT_RULES>"] = s.textRules;
         resolved["<SWARM_QUESTION_BUILDER>"] = s.questionBuilder;
-        resolved["<BALLOT_CHECKER>"] = s.ballotChecker;
+        resolved["<VOTE_POWER>"] = s.votePower;
         resolved["<ATTESTATION_CHECKER>"] = s.attestationChecker;
         resolved["<YOLO>"] = YOLO_PLACEHOLDER;
-        resolved["$contract:CaseDesk"] = addrs[0];
-        resolved["$contract:DisputeDesk"] = addrs[1];
-        assertEq(_docCode(type(CaseDesk).creationCode, DOC2_CASE), plan[0], "CaseDesk");
-        assertEq(_docCode(type(DisputeDesk).creationCode, DOC2_DISPUTE), plan[1], "DisputeDesk");
-        assertEq(_docCode(type(TaskVault).creationCode, DOC2_VAULT), plan[2], "TaskVault (8 args, yolo 4th)");
+        resolved["<BUYBACK_BURNER>"] = s.burner;
+        resolved["$contract:YoloLockHub"] = addrs[0];
+        resolved["$contract:CaseDesk"] = addrs[1];
+        resolved["$contract:DisputeDesk"] = addrs[2];
+        assertEq(_docCode(type(YoloLockHub).creationCode, DOC2_HUB), plan[0], "YoloLockHub");
+        assertEq(_docCode(type(CaseDesk).creationCode, DOC2_CASE), plan[1], "CaseDesk ($YOLO and the hub 6th, 7th)");
+        assertEq(_docCode(type(DisputeDesk).creationCode, DOC2_DISPUTE), plan[2], "DisputeDesk (the hub 6th)");
+        assertEq(_docCode(type(TaskVault).creationCode, DOC2_VAULT), plan[3], "TaskVault (9 args, yolo 4th, burner 9th)");
     }
 
-    /// Launch 3 of the doc (YoloSweetener, DareTrophy: the vault of launch 2 their one address; ProtocolDirectory:
-    /// version 1 = that vault and these modules) = LaunchPlan.extras.
+    /// Launch 3 of the doc (YoloSweetener: the vault of launch 2; TrophyCatalog before the DareTrophy that reads it, so
+    /// every `$contract:` points back; ProtocolDirectory: version 1 = that vault and these modules) = LaunchPlan.extras.
     function test_L5_docLaunch3Args_matchPlan() public {
-        _resolveOwners();
         address vault = address(0xBEEF);
         uint64 coreBlock = 24_000_000;
         (bytes[] memory plan, bytes32[] memory names, address[] memory addrs) =
             LaunchPlan.extras(new LocalFactory(), 3, vault, OWNER, coreBlock);
-        assertEq(names.length, 4);
+        assertEq(names.length, 6);
         assertEq(names[0], bytes32("YoloSweetener"));
-        assertEq(names[1], bytes32("DareTrophy"));
-        assertEq(names[2], bytes32("ProtocolDirectory"));
-        assertEq(names[3], bytes32("HiddenList"));
+        assertEq(names[1], bytes32("TrophyCatalog"));
+        assertEq(names[2], bytes32("DareTrophy"));
+        assertEq(names[3], bytes32("ProtocolDirectory"));
+        assertEq(names[4], bytes32("HiddenList"));
+        assertEq(names[5], bytes32("YoloPredict"));
         resolved["<TASK_VAULT>"] = vault;
         resolved["<CORE_BLOCK>"] = address(uint160(coreBlock)); // a number placeholder: _docArgs writes it as a word
         resolved["$contract:YoloSweetener"] = addrs[0];
-        resolved["$contract:DareTrophy"] = addrs[1];
+        resolved["$contract:TrophyCatalog"] = addrs[1];
+        resolved["$contract:DareTrophy"] = addrs[2];
         assertEq(_docCode(type(YoloSweetener).creationCode, DOC3_SWEETENER), plan[0], "YoloSweetener");
-        assertEq(_docCode(type(DareTrophy).creationCode, DOC3_TROPHY), plan[1], "DareTrophy (vault, $1.50, 10,000 YOLO)");
+        assertEq(_docCode(type(TrophyCatalog).creationCode, DOC3_CATALOG), plan[1], "TrophyCatalog (owner)");
+        assertEq(_docCode(type(DareTrophy).creationCode, DOC3_TROPHY), plan[2], "DareTrophy (vault, catalog)");
         assertEq(
             _docCode(type(ProtocolDirectory).creationCode, DOC3_DIRECTORY),
-            plan[2],
+            plan[3],
             "ProtocolDirectory (owner, vault, modules, block of launch 2)"
         );
         assertEq(
-            _docCode(type(HiddenList).creationCode, DOC3_HIDDENLIST), plan[3], "HiddenList (owner, nft, delegateRegistry)"
+            _docCode(type(HiddenList).creationCode, DOC3_HIDDENLIST), plan[4], "HiddenList (owner, nft, delegateRegistry)"
         );
+        assertEq(_docCode(type(YoloPredict).creationCode, DOC3_PREDICT), plan[5], "YoloPredict (vault, 1 YOLO)");
     }
 }
 
@@ -339,70 +366,45 @@ contract ReviewLaunchStatic is Test {
 contract ReviewLaunchRuntime is Base {
     uint8 constant REJECT = 2;
 
-    /// The IMD the relayer is paid from the loser penalty (DisputeDesk._reimburseRelayer, `shortImd = shortWei *
-    /// imdPerEth / 1e18`, imdPerEth = oracle at submission) is the one oracle-priced payout; docs/LAUNCH-TASK.md says
-    /// so in both launch texts. Same case, ETH price doubled at the oracle -> the relayer's IMD claim doubles.
-    /// Since the swarm audit (#3) the claim is at most 20% of the penalty: the recorded IMD scales with the
-    /// price, the payout is that up to the cap.
-    function test_L4_oraclePriceSetsRelayerPayout() public {
-        uint256 a = _shortfallAt(1250e18);
-        uint256 b = _shortfallAt(2500e18);
-        console.log("relayer IMD recorded at ETH $1250:", a);
-        console.log("relayer IMD recorded at ETH $2500:", b);
-        assertGt(a, 0);
-        assertApproxEqRel(b, 2 * a, 0.0001e18, "the shortfall scales with the oracle price");
-    }
+    /// Nobody is reimbursed for voting gas.
 
-    function _shortfallAt(uint256 ethUsd) internal returns (uint256 recorded) {
-        uint256 snap = vm.snapshotState();
-        oracle.set(ETH, ethUsd, 18);
-        uint256 t = _create(author, address(usdc), 100e6);
-        uint256 s = _submit(doer, t);
-        _dispute(dave, s);
-        vm.fee(10 gwei);
-        _vote(s, 1, REJECT, 120, 20);
-        recorded = vault.relayerShortfall(s, relayer);
-        _warp(48 hours);
-        vault.poke(t);
-        uint256 before = imd.balanceOf(relayer);
-        vm.prank(relayer);
-        vault.claimRelayerShortfall(s);
-        uint256 cap = 1e18 * disputeDesk.MAX_SHORTFALL_BPS() / 10_000; // of the 1 IMD loser penalty
-        assertEq(imd.balanceOf(relayer) - before, recorded < cap ? recorded : cap, "paid up to 20% of the penalty");
-        vm.revertToState(snap);
-    }
-
-    /// submitVotes is bounded only by the batch the relayer builds; a single ballot cannot be split by the relayer
-    /// (the signature covers the tokenIds list). Gas per NFT here (mock NFT, so a lower bound for the real one) and
-    /// the largest ballot that fits the 16,777,216 cap.
-    function test_L5_submitVotes_gasPerNft() public {
+    /// The vote grows with the number of NFT ids sent. Gas per NFT here
+    /// (mock NFT, so a lower bound for the real one) and the largest vote that fits the 16,777,216 cap: a holder of
+    /// more votes in several transactions (same side).
+    function test_L5_vote_gasPerNft() public {
         uint256 n = 1_000;
-        uint256 key = 0xC0FFEE;
-        address v = vm.addr(key);
+        address v = makeAddr("bigHolder");
         for (uint256 i; i < n; ++i) {
             nft.mint(v, 10_000 + i);
         }
+        Params memory p = defaultParams();
+        p.instantDelta = 2_000;
+        vm.prank(multisig);
+        registry.proposeParams(p);
+        vm.warp(block.timestamp + 48 hours);
+        registry.activateParams();
         uint256 t = _create(author, address(usdc), 100e6);
         uint256 s = _submit(doer, t);
         _dispute(dave, s);
-        Ballot[] memory small = new Ballot[](1);
-        small[0] = _ballotByKey(s, key, REJECT, _ids(10_000, 10), v, _sub(s).voteEnd);
-        Ballot[] memory big = new Ballot[](1);
-        big[0] = _ballotByKey(s, key, REJECT, _ids(10_010, n - 10), v, _sub(s).voteEnd);
-        vm.prank(relayer);
+        vm.prank(v);
         uint256 g0 = gasleft();
-        vault.submitVotes(s, small);
+        vault.vote(s, REJECT, v, _ids(10_000, 10));
         uint256 gSmall = g0 - gasleft();
-        vm.prank(relayer);
+        vm.prank(v);
         g0 = gasleft();
-        vault.submitVotes(s, big);
+        vault.vote(s, REJECT, v, _ids(10_010, 490));
         uint256 gBig = g0 - gasleft();
-        uint256 perNft = gBig / (n - 10);
-        console.log("submitVotes 10 NFTs:", gSmall);
-        console.log("submitVotes 990 NFTs:", gBig);
+        vm.prank(v);
+        vault.vote(s, REJECT, v, _ids(10_500, 500));
+        uint256 perNft = gBig / 490;
+        console.log("vote 10 NFTs:", gSmall);
+        console.log("vote 490 more NFTs:", gBig);
         console.log("gas per NFT (mock NFT):", perNft);
-        console.log("max NFTs in one ballot under the cap (mock):", 16_777_216 / perNft);
+        console.log("max NFTs in one vote under the cap (mock):", 16_777_216 / perNft);
         assertLt(gBig, 16_777_216);
+        assertGt(16_777_216 / perNft, 500, "500 NFTs fit one transaction");
+        assertEq(vault.getDispute(s).votesReject, n);
+        assertEq(vault.getDispute(s).walletsReject, 1);
     }
 }
 
@@ -411,8 +413,8 @@ contract ReviewLaunchRuntime is Base {
 ///      figure is the factory frame's execution + the CALL. Foundry's gasleft() around a `vm.prank`ed top-level call
 ///      from the test (the rehearsal's method) already counts the calldata, which the rehearsal then adds once more.
 ///      Cross-check (scratch replays of real platform launches at their own blocks; receipt / this method /
-///      rehearsal method): 0x218f2113… 14,955,519 / 15,003,607 / 16,182,791; 0x9c319bb2… 9,293,049 /
-///      9,364,732 / 9,891,076; 0x3506bb74… 4,280,634 / 4,345,612 / 4,529,235.
+///      rehearsal method): 0x218f2113... 14,955,519 / 15,003,607 / 16,182,791; 0x9c319bb2... 9,293,049 /
+///      9,364,732 / 9,891,076; 0x3506bb74... 4,280,634 / 4,345,612 / 4,529,235.
 contract DeployerMeter {
     function run(address target, bytes calldata data, uint256 gasLimit) external returns (bool ok, uint256 used) {
         bytes memory d = data;
@@ -424,8 +426,9 @@ contract DeployerMeter {
     }
 }
 
-/// @dev Gas of both launches as the chain charges it (DeployerMeter), against the cap and the figure the
-///      rehearsal's method gives (it counts the calldata twice). Skips without FORK_URL.
+/// @dev Gas of the launches as the chain charges it (DeployerMeter), against the cap and the docs/LAUNCH-TASK.md
+///      figures (launch 1 12.69M, launch 2 14.88M); the rehearsal method counts the intrinsic gas twice.
+///      Skips without FORK_URL.
 contract ReviewLaunchFork is ReviewLaunchForkBase {
     function setUp() public override {
         super.setUp();
@@ -497,15 +500,13 @@ contract ReviewLaunchFork is ReviewLaunchForkBase {
         console.log("launch 2 total gas (chain)       ", total);
         console.log("launch 2 smallest gas limit      ", limit);
         console.log("margin to the cap                ", CAP - limit);
-        console.log("rehearsal method                  ", rehearsal);
+        console.log("rehearsal method                 ", rehearsal);
         console.log("intrinsic (21000 + calldata)      ", _intrinsic(data));
-        // 14.64M before the B-01, C-01 and C-02 fixes
-        // 14.32M before the swarm audit fixes
-        assertApproxEqRel(total, 14_560_000, 0.005e18, "docs/LAUNCH-TASK.md: launch 2 14.56M");
+        assertApproxEqRel(total, 14_880_000, 0.005e18, "docs/LAUNCH-TASK.md: launch 2 14.88M");
         assertApproxEqRel(rehearsal - total, _intrinsic(data), 0.005e18, "rehearsal counts the intrinsic gas twice");
     }
 
-    /// Launch 1 (custom_token: $YOLO + pool + distributor + 7 support; the splitter is launch 0) the same way, at a fresh
+    /// Launch 1 (custom_token: $YOLO + pool + distributor + 8 support; the splitter is launch 0) the same way, at a fresh
     /// launch number.
     function test_F1b_support_realGas_vs_rehearsal() public {
         (bytes memory data,,) = _launch1Data(4_000_000_303);
@@ -516,9 +517,8 @@ contract ReviewLaunchFork is ReviewLaunchForkBase {
         console.log("launch 1 total gas (chain)       ", total);
         console.log("launch 1 smallest gas limit      ", limit);
         console.log("margin to the cap                ", CAP - limit);
-        console.log("rehearsal method                  ", rehearsal);
-        // 12.72M before the swarm audit fixes
-        assertApproxEqRel(total, 12_980_000, 0.005e18, "docs/LAUNCH-TASK.md: launch 1 12.98M");
+        console.log("rehearsal method                 ", rehearsal);
+        assertApproxEqRel(total, 12_690_000, 0.005e18, "docs/LAUNCH-TASK.md: launch 1 12.69M");
         assertApproxEqRel(rehearsal - total, _intrinsic(data), 0.005e18, "rehearsal counts the intrinsic gas twice");
     }
 
@@ -533,9 +533,8 @@ contract ReviewLaunchFork is ReviewLaunchForkBase {
         (bool ok, uint256 total) = _total(data, 30_000_000, false);
         assertTrue(ok);
         console.log("launch 0 total gas (chain)       ", total);
-        // 2.90M before the vesting clocks (ProjectVesting `startOf`, YoloSplitter starts them: A-03)
-        // 3.14M before the swarm audit fixes (only the YoloSplitter starts a clock: bindStarter)
-        assertApproxEqRel(total, 3_520_000, 0.005e18, "docs/LAUNCH-TASK.md: launch 0 3.52M");
+        // ProjectVesting `startOf`: only the YoloSplitter starts a clock (bindStarter)
+        assertApproxEqRel(total, 3_560_000, 0.005e18, "docs/LAUNCH-TASK.md: launch 0 3.56M");
     }
 
     /// Mainnet runs Osaka rules; the repo's evm_version is cancun. The deploy path must not move.
@@ -558,9 +557,7 @@ contract ReviewLaunchFork is ReviewLaunchForkBase {
         (, uint256 core) = _total(_coreData(), 30_000_000, false);
         console.log("gas per runtime byte (nonzero)", perNonzero);
         console.log("bytes of new code that fit launch 2 under the cap:", (CAP - core) / perNonzero);
-        // ~9.9 KB before the B-01, C-01 and C-02 fixes
-        // ~11.4 KB before the swarm audit fixes
-        assertApproxEqAbs((CAP - core) / perNonzero, 10_300, 300, "docs/LAUNCH-TASK.md: ~10.3 KB by gas");
+        assertApproxEqAbs((CAP - core) / perNonzero, 8_800, 300, "docs/LAUNCH-TASK.md: ~8.8 KB by gas");
     }
 
     function _dummyLaunch(uint64 n, uint256 size, bytes1 fill) internal returns (uint256 total) {
@@ -581,8 +578,7 @@ contract ReviewLaunchFork is ReviewLaunchForkBase {
         assertEq(exp[0].code.length, size);
     }
 
-    /// The real Intake's request() with bodies up to the 16,384-byte limit: part of every ask and of the 2.5M
-    /// emergency advance budget.
+    /// The real Intake's request() with bodies up to the 16,384-byte limit: part of every ask.
     function test_F3_realIntakeRequestGas() public {
         IIntake intake = IIntake(LaunchPlan.INTAKE);
         bytes32 action = "oracle.request@oracle-1";

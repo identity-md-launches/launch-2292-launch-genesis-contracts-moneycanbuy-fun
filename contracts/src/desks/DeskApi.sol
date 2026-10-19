@@ -14,11 +14,10 @@ struct SubmitTerms {
     uint32 version; // parameter version of the task
     address currency;
     uint8 proofType;
-    uint32 rejectedCount;
     bool busy; // a submission is active: a new one is queued
-    uint256 ahead; // the active submission (0 or 1) plus the queue in front of a new submission
     uint256 pot;
-    bool doerEver; // the doer ever contributed to this task
+    uint256 base; // the author's own share of the pot: the base of the bonds' "rew" part
+    uint256 addon; // $YOLO add-on of the task (the vault's YoloSweetener): no bond, not in the stake bonus base
 }
 
 /// @notice The fixed fields of a submission the other desks read (CaseDesk.subCore).
@@ -32,8 +31,9 @@ struct SubCore {
     uint64 voteEnd;
     uint32 version; // parameter version of its task
     address currency; // reward currency of its task
-    uint256 rewardImd;
-    uint256 imdPerEth;
+    uint256 reward; // R, fixed at submission (task currency)
+    uint256 base; // the author's own share of R at submission: the base of the dispute/appeal bond's "rew" part
+    uint256 addon; // $YOLO add-on, fixed at submission (a voter pool of its own on acceptance)
 }
 
 /// @notice A submission at settlement (CaseDesk -> DisputeDesk.settle).
@@ -42,11 +42,11 @@ struct Facts {
     uint32 version;
     address currency;
     address doer;
-    bool doerIsContributor;
     Verdict nftDecision;
     uint256 reward;
-    uint256 bond;
-    uint256 checkFunds; // unused mandatory-check prepayment, credited back to the doer
+    Bond bond;
+    uint64 since; // the submission's time: the lock behind the stake bonus must still run at the payout
+    uint16 stakeBps; // the doer stake bonus fixed at submission (0..400 bps of R)
 }
 
 /// @notice NFT vote totals of a submission.
@@ -61,8 +61,6 @@ struct Tally {
 struct AppealCore {
     address appellant;
     bool sidesDoer;
-    bool replied;
-    uint64 replyEnd;
     uint256 funds;
 }
 
@@ -84,31 +82,49 @@ interface IVault {
     function collectImd(address from, uint256 msgValue, uint256 needed, address adapter, ImdPay calldata payIn)
         external
         returns (uint256 ethNeeded);
-    function bookEth(uint256 amount, bool toTreasury) external;
+    /// @notice Books `amount` of `currency` from `from` for a bond's "rew" or "add" part (ETH from msg.value, IMD by
+    ///         plain transferFrom, any other token by transferFrom): no swap, no oracle.
+    function collectBondPart(address from, uint256 msgValue, address currency, uint256 amount)
+        external
+        returns (uint256 ethNeeded);
     function settleValue(address payer, uint256 msgValue, uint256 ethNeeded) external;
     function credit(address token, address account, uint256 amount) external;
     function pay(address token, address to, uint256 amount) external;
     function addTreasury(address token, uint256 amount) external;
+    function burn(address token, uint256 amount) external;
     function ask(AskTerms calldata t, bytes calldata body) external returns (bool ok, uint256 spent, bytes32 requestId);
     function requests(bytes32 requestId) external view returns (SwarmRequest memory);
 
     function advance(uint256 taskId) external;
     function isContributor(uint256 taskId, address who) external view returns (bool);
     function submitTerms(uint256 taskId, address doer) external view returns (SubmitTerms memory);
+    function potOf(uint256 taskId) external view returns (uint256);
     function place(uint256 taskId, uint256 subId, bool queued) external;
     function closeSubmission(uint256 taskId, Outcome o, uint256 reward) external returns (uint256 next);
     function statusOf(uint256 taskId) external view returns (TaskStatus);
+    function sweetener() external view returns (address);
+}
+
+/// @notice The doer stake (YoloLockHub): a lock's power at a moment (strictly before it), and the
+///         power a submission made at `since` keeps at the payout (0 once that lock ended or was withdrawn).
+interface IDoerStake {
+    function powerAt(address who, uint256 t) external view returns (uint256);
+    function stakePower(address who, uint64 since) external view returns (uint256);
 }
 
 interface ICaseDesk {
     function step(uint256 subId) external returns (bool moved);
-    function finalize(uint256 subId, Outcome o) external;
     function stepDeadline(uint256 subId) external view returns (uint256);
     function subCore(uint256 subId) external view returns (SubCore memory);
     function advanced(uint256 subId) external returns (SubCore memory);
-    function startVote(uint256 subId, uint32 voteWindow, uint32 replyWindow) external;
+    function startVote(uint256 subId, uint32 voteWindow) external;
     function markAppealed(uint256 subId) external;
-    function askEscalation(uint256 subId, uint256 price) external returns (bool ok, uint256 spent);
+    function askEscalation(uint256 subId, uint256 price, RuleTexts calldata rt) external returns (bool ok, uint256 spent);
+    function askAppeal(uint256 subId, uint256 funds, RuleTexts calldata rt) external;
+    function unwind(uint256 subId) external;
+    function tryInstantDecision(uint256 subId, Tally calldata v) external;
+    function voteState(uint256 subId) external view returns (Phase phase, uint64 voteEnd, uint32 version);
+    function doerBondImd(uint256 subId) external view returns (uint256);
 }
 
 interface IDisputeDesk {
@@ -116,5 +132,5 @@ interface IDisputeDesk {
     function appealCore(uint256 subId) external view returns (AppealCore memory);
     function appealAsked(uint256 subId, uint256 spent) external;
     function dropCaller(uint256 subId) external;
-    function settle(uint256 subId, Outcome o, bool tie, Facts calldata f) external;
+    function settle(uint256 subId, Outcome o, Facts calldata f) external;
 }

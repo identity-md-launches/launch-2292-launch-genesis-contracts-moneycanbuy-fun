@@ -4,14 +4,14 @@ pragma solidity ^0.8.28;
 import {Vm} from "forge-std/Vm.sol";
 import "../Base.t.sol";
 
-/// @dev Regression of the core split: the earlier single-contract vault (TaskVault + external libraries) was
-///      split into TaskVault + CaseDesk + DisputeDesk + helpers. The scenarios below use only `vault` and the Base
-///      helpers, so the same functions also ran on the pre-split monolith (same registry and mocks): the "golden"
-///      ledger hashes (credits, treasury, liabilities, balances after all payouts) were taken from the old code and
-///      must match on the new one. Plus what the split changed on purpose or in gas.
+/// @dev A regression test of the core: TaskVault + CaseDesk + DisputeDesk + helpers.
+///      The scenarios below use only `vault` and the Base helpers;
+///      "golden" accounting hashes (credits, treasury, liabilities, balances after every payout) pin down the
+///      money of each outcome, checked by hand against the inline assertions in each scenario.
+///      `Submission.bond` is the `Bond` struct (imd/rew/add); no oracle sizes the bond.
 abstract contract SplitScenarios is Base {
-    /// @dev All the money a user sees: participants' credits and balances in three currencies, the vault's balances,
-    ///      treasury and liabilities. Contract addresses are left out (the old and new vault differ).
+    /// @dev All the money a user can see: credits and balances of participants in three currencies, the vault's
+    ///      balances, the treasury and liabilities. Contract addresses are not part of this.
     function _ledger() internal view returns (bytes32 h) {
         address[13] memory who = [
             author, alice, bob, doer, doer2, dave, erin, relayer, voters[0], voters[1], voters[2], treasury, swarmPayee
@@ -38,94 +38,147 @@ abstract contract SplitScenarios is Base {
         return keccak256(abi.encode(vault.getSettlement(s), sb, vault.getDispute(s)));
     }
 
-    /// @dev The record of a case whose NFT decision the pre-split monolith made instantly with the vote batch, relayed
-    ///      right after the dispute (decidedAt = callFrom = voteEnd - voteWindow). The current code (audit C-02) has
-    ///      the same votes decide at the vote end; only these two times differ, so they are moved back before hashing
-    ///      and the golden ledgers recorded from the pre-split vault still apply (the ledgers need no adjustment:
-    ///      basefee 0).
-    function _settledAsInstant(uint256 s) internal view returns (bytes32) {
-        Submission memory sb = vault.getSubmission(s);
-        sb.request = bytes32(0);
-        assertEq(sb.decidedAt, sb.voteEnd, "decided at the vote end");
-        sb.decidedAt = sb.voteEnd - 24 hours;
-        sb.callFrom = sb.decidedAt;
-        return keccak256(abi.encode(vault.getSettlement(s), sb, vault.getDispute(s)));
-    }
-
-    /// @return a ledger right after settlement, b the submission's settlement, c ledger after all payouts and withdrawals
+    /// @return a the ledger right after settlement, b the settlement record, c the ledger after every payout and withdrawal
+    /// @dev The sums of each outcome were checked by hand and pinned by assertions right in the scenario: the
+    ///      golden hashes below were taken only after that (one dispute, one disputer: dave).
+    ///      R = 150 USDC (author 100 + alice 50). Bonds are counted only against the author's reward (100):
+    ///      doer bond 0.5 IMD + 3 USDC; dispute bond 0.5 IMD + 1 USDC.
+    ///      The NFT decided right, accepted: the doer gets 135 USDC + 3 (their bond) + 0.5 (half of dave's bond)
+    ///      = 138.5; the treasury 7.5 (5%), the votes 7.5 + 0.5; dave's bond (1 USDC, 0.5 IMD): half to the doer,
+    ///      half to the votes.
     function _s1AcceptedNftRight() internal returns (bytes32 a, bytes32 b, bytes32 c) {
         uint256 t = _create(author, address(usdc), 100e6);
         _topUp(alice, t, 50e6);
         uint256 s = _submit(doer, t);
+        assertEq(_sub(s).bond.imd, _fixedBond());
+        assertEq(_sub(s).bond.rew, 3e6, "3% of the author's $100 (alice's $50 is no part of it)");
         _dispute(dave, s);
-        _dispute(erin, s);
-        vm.prank(doer);
-        vault.reply(s, "my reply");
         _vote(s, 0, 1, 0, 120); // +120 accept
-        _endVote(s); // decided at the vote end (audit C-02; the pre-split vault decided instantly)
+        _endVote(s); // decided at the vote end
         _warp(24 hours);
         vault.poke(t);
         assertEq(uint8(_sub(s).outcome), uint8(Outcome.Accepted));
         assertEq(uint8(_sub(s).nftDecision), uint8(Verdict.Accept));
-        (a, b) = (_ledger(), _settledAsInstant(s));
-        _claimEverythingAndCheck();
-        c = _ledger();
-    }
-
-    function _s2AppealSwarmOverturns() internal returns (bytes32 a, bytes32 b, bytes32 c) {
-        uint256 t = _create(author, address(imd), 30e18);
-        uint256 s = _submit(doer, t);
-        _dispute(dave, s);
-        _vote(s, 0, 1, 0, 120); // NFT: accept
-        _endVote(s); // decided at the vote end (audit C-02; the pre-split vault decided instantly)
-        _appeal(erin, s); // against the doer
-        vm.prank(doer);
-        vault.appealReply(s, "appeal reply");
-        vault.poke(t); // asked
-        _answer(s, false); // swarm: rejected, NFT was wrong, the caller wins
-        vault.poke(t);
-        assertEq(uint8(_sub(s).outcome), uint8(Outcome.Rejected));
-        (a, b) = (_ledger(), _settledAsInstant(s));
-        _claimEverythingAndCheck();
-        c = _ledger();
-    }
-
-    function _s3TieNobodyCalls() internal returns (bytes32 a, bytes32 b, bytes32 c) {
-        uint256 t = _create(author, ETH, 0.02 ether);
-        uint256 s = _submit(doer, t);
-        _dispute(dave, s);
-        _dispute(erin, s);
-        _vote(s, 2, 1, 140, 10);
-        _vote(s, 1, 2, 120, 10);
-        _warp(24 hours);
-        vault.poke(t); // NoDecision
-        _warp(24 hours);
-        vault.poke(t); // accepted by the tie rule
-        assertEq(uint8(_sub(s).outcome), uint8(Outcome.Accepted));
-        assertEq(uint8(_sub(s).nftDecision), uint8(Verdict.None));
+        assertEq(vault.credits(address(usdc), doer), 135e6 + 3e6 + 0.5e6, "90% of R, his bond back, half of dave's bond");
+        assertEq(vault.getSettlement(s).voterBond.rew, 0.5e6, "half of dave's 1 USDC");
+        assertEq(vault.treasuryPot(address(usdc)), 7.5e6);
+        assertEq(vault.getSettlement(s).voterFee, 7.5e6);
+        assertEq(vault.credits(address(imd), doer), _fixedBond() + _fixedBond() / 2, "fixed bond back + half of dave's 0.5 IMD");
+        assertEq(vault.getSettlement(s).voterBond.imd, _fixedBond() / 2, "half of dave's 0.5 IMD");
+        assertEq(vault.treasuryPot(address(imd)), 0);
         (a, b) = (_ledger(), _settled(s));
         _claimEverythingAndCheck();
         c = _ledger();
     }
 
-    function _s4LargeCheckNoThenQueued() internal returns (bytes32 a, bytes32 b, bytes32 c) {
-        uint256 t = _create(author, address(imd), 50e18); // large: mandatory check
+    /// @dev IMD R = 30 (reward and bonds share the same token): doer bond 0.5 IMD + 0.9 (3% of 30); dave's
+    ///      (dispute) and erin's (appeal) bond 0.5 IMD + 0.3 (1%) each. NFT "accept", swarm "no" (doer loses): the
+    ///      penalty is the doer's bond (0.5 imd + 0.9 rew). Erin's swarm fee (0.5 IMD) comes back to her out of
+    ///      the imd penalty, which then empties. The rew penalty (0.9), NFT was wrong: 100% to the winners pro
+    ///      rata to their bonds (dave 0.3 + erin 0.3 = 0.6): erin gets 0.9 x 0.3/0.6 = 0.45 directly (the
+    ///      appellant gets their share directly), the remaining 0.45 is dave's, but claimDisputer has not been
+    ///      called yet, so credits show only erin's share right away.
+    function _s2AppealSwarmOverturns() internal returns (bytes32 a, bytes32 b, bytes32 c) {
+        uint256 t = _create(author, address(imd), 30e18);
         uint256 s = _submit(doer, t);
-        uint256 s2 = _submit(doer2, t); // queued, bond doubled
-        _topUp(bob, t, 5e18); // pending
-        _answer(s, false);
-        vault.poke(t); // rejected; s2 activated, its check asked
-        _answer(s2, true);
+        assertEq(_sub(s).bond.imd, _fixedBond());
+        assertEq(_sub(s).bond.rew, 0.9e18, "3% of 30 IMD");
+        _dispute(dave, s);
+        _vote(s, 0, 1, 0, 120); // NFT: accept
+        _endVote(s); // decided at the vote end
+        _appeal(erin, s); // against the doer
+        _askAppealSwarm(s); // lazy ask
+        _answer(s, false); // swarm: rejected, NFT was wrong, the caller wins
+        vault.poke(t);
+        assertEq(uint8(_sub(s).outcome), uint8(Outcome.Rejected));
+        // her 0.5 IMD swarm fee is simply
+        // spent, win or lose - no separate fee-refund credit. dave is the only disputer; erin never
+        // disputed, only appealed and won - she is a stranger appellant, so she gets 0.5 IMD off the top of the
+        // imd-leg (fixed) penalty first. That penalty is exactly the doer's fixed bond (0.5 IMD = p.bondFixedImd),
+        // so her stranger carve-out consumes it entirely: nothing is left for a 50/50 split on that leg, dave's
+        // fixed-leg disputerReward is 0. The rew leg (3%-of-R, 0.9) has no such carve-out: 50/50 between dave and
+        // erin (erin's direct carve-out 0.45, dave's matching share waits in disputerReward).
+        assertEq(
+            vault.credits(address(imd), erin),
+            0.5e18 /* her bond.imd back */ + 0.3e18 /* her bond.rew back */ + 0.5e18 /* stranger carve-out */
+                + 0.45e18, /* rew-leg carve-out */
+            "erin: bond back + stranger carve-out + rew-leg carve-out (no fee refund)"
+        );
+        assertEq(vault.getSettlement(s).disputerReward.rew, 0.45e18, "dave's unclaimed share of the rew-leg penalty");
+        assertEq(vault.getSettlement(s).disputerReward.imd, 0, "erin's stranger carve-out took the whole fixed-leg penalty");
+        assertEq(vault.getSettlement(s).voterBond.imd, 0);
+        assertEq(vault.treasuryPot(address(imd)), 0);
+        (a, b) = (_ledger(), _settled(s));
+        _claimEverythingAndCheck();
+        c = _ledger();
+    }
+
+    /// @dev ETH R = 0.02 ($50): NFT 10 : 10, nobody called the swarm: accepted, the disputers' bond (0.5 IMD +
+    ///      1%, dave alone) goes entirely to the doer (a tie), a 10% ETH fee to the treasury.
+    function _s3UndecidedNobodyCalls() internal returns (bytes32 a, bytes32 b, bytes32 c) {
+        uint256 t = _create(author, ETH, 0.02 ether);
+        uint256 s = _submit(doer, t);
+        _dispute(dave, s);
+        _vote(s, 2, 1, 140, 10);
+        _vote(s, 1, 2, 120, 10);
+        _warp(24 hours);
+        vault.poke(t); // NoDecision
+        _warp(24 hours);
+        vault.poke(t); // accepted: undecided, nobody called
+        assertEq(uint8(_sub(s).outcome), uint8(Outcome.Accepted));
+        assertEq(uint8(_sub(s).nftDecision), uint8(Verdict.None));
+        assertEq(vault.credits(ETH, doer), 0.018 ether + 0.0006 ether + 0.0002 ether, "90% of R, his bond and dave's bond");
+        assertEq(vault.treasuryPot(ETH), 0.002 ether, "the whole 10% (no author fee)");
+        assertEq(vault.credits(address(imd), doer), _fixedBond() + _fixedBond(), "his fixed bond + dave's");
+        assertEq(vault.treasuryPot(address(imd)), 0);
+        (a, b) = (_ledger(), _settled(s));
+        _claimEverythingAndCheck();
+        c = _ledger();
+    }
+
+    /// @dev IMD R = 50: s (bond 0.5 IMD + 1.5 rew) is disputed and the NFT rejects it correctly (the penalty is
+    ///      s's bond, the NFT was right: half to dave, half to the votes: imd 0.25/0.25, rew 0.75/0.75), the
+    ///      queued s2 (bond 0.5 IMD fixed + 1.5 rew, no doubling) activates with no question to the swarm and
+    ///      is accepted by the timer: 45 IMD + its bond 1.5 to the doer, 5 to the treasury. Bob's 5 IMD top-up
+    ///      during the check joins the reward at once: s2 gets 90% of 55 = 49.5, the treasury 5.5.
+    function _s4RejectedThenQueuedAccepted() internal returns (bytes32 a, bytes32 b, bytes32 c) {
+        uint256 t = _create(author, address(imd), 50e18);
+        uint256 s = _submit(doer, t);
+        uint256 s2 = _submit(doer2, t); // queued, the same bond (no doubling)
+        _topUp(bob, t, 5e18); // during the check: joins the pot at once
+        _dispute(dave, s);
+        _vote(s, 1, 2, 120, 20); // NFT: reject
+        _warp(48 hours);
+        vault.poke(t); // rejected; s2 activated, nothing asked
+        assertEq(uint8(_phase(s2)), uint8(Phase.Review));
+        assertEq(_sub(s2).request, bytes32(0));
         _warp(24 hours);
         vault.poke(t); // accepted
         assertEq(uint8(_sub(s).outcome), uint8(Outcome.Rejected));
         assertEq(uint8(_sub(s2).outcome), uint8(Outcome.Accepted));
-        assertEq(_sub(s2).bond, _sub(s).bond * 2, "queued bond doubled");
+        assertEq(_sub(s).bond.imd, _fixedBond());
+        assertEq(_sub(s).bond.rew, 1.5e18, "3% of 50 IMD");
+        assertEq(_sub(s2).bond.imd, _fixedBond(), "fixed part never doubles");
+        assertEq(_sub(s2).bond.rew, _sub(s).bond.rew, "queued rew bond: the same 3%, never doubled");
+        assertEq(vault.getSettlement(s).voterBond.imd, _fixedBond() / 2);
+        assertEq(vault.getSettlement(s).voterBond.rew, 0.75e18);
+        assertEq(vault.getSettlement(s).disputerReward.imd, _fixedBond() / 2);
+        assertEq(vault.getSettlement(s).disputerReward.rew, 0.75e18);
+        assertEq(vault.credits(address(imd), doer2), 49.5e18 + 1.5e18 + _fixedBond(), "90% of R (50 + bob 5), his rew bond, his fixed bond");
+        assertEq(vault.treasuryPot(address(imd)), 5.5e18);
+        assertEq(_sub(s2).reward, 55e18, "bob's top-up during the check is in the reward");
         (a, b) = (_ledger(), keccak256(abi.encode(_settled(s), _settled(s2))));
         _claimEverythingAndCheck();
         c = _ledger();
     }
 
+    /// @dev USDC R = 60: bonds 0.5 IMD + 1% (0.6) / 3% (1.8) R. bob (for the doer) called the swarm, silence:
+    ///      bond back, fee lost (their side lost). erin (against) called, swarm said "no": the penalty is the
+    ///      doer's bond (0.5 IMD + 1.8 USDC), two legs. swarm fees are never returned separately. dave is
+    ///      the only disputer; erin only called - a stranger appellant, who on winning gets 0.5 IMD (the whole
+    ///      imd-leg penalty, since the penalty equals F = bondFixedImd) entirely, with no usual split. The rew
+    ///      leg (1.8 USDC, the NFT did not decide) has no carve-out: pro rata to the winners' bonds (dave 0.6 +
+    ///      erin 0.6 = 1.2): erin gets 1.8 x 0.6/1.2 = 0.9 directly, the remaining 0.9 is dave's (claimDisputer).
     function _s5CallSwarmSilentThenCalledAgain() internal returns (bytes32 a, bytes32 b, bytes32 c) {
         uint256 t = _create(author, address(usdc), 60e6);
         uint256 s = _submit(doer, t);
@@ -135,74 +188,62 @@ abstract contract SplitScenarios is Base {
         vault.poke(t); // NoDecision
         _callSwarm(bob, s, true);
         _silent(s);
-        vault.poke(t); // silence: bob's fee lost, bond back, new window
+        vault.poke(t); // silence: bob's fee lost (his side loses in the end), bond back, new window
         _callSwarm(erin, s, false);
         _answer(s, false); // rejected, erin wins
         vault.poke(t);
         assertEq(uint8(_sub(s).outcome), uint8(Outcome.Rejected));
         assertEq(_sub(s).asks, 2);
+        assertEq(vault.credits(address(imd), bob), _fixedBond(), "his bond.imd back on silence");
+        assertEq(
+            vault.credits(address(imd), erin),
+            _fixedBond() /* her bond.imd back */ + _fixedBond(), /* her stranger carve-out: the whole imd-leg penalty */
+            "erin: bond back + stranger carve-out (no fee refund)"
+        );
+        assertEq(vault.credits(address(usdc), erin), 0.6e6 /* her bond.rew back */ + 0.9e6, /* her pro-rata share */ "erin: bond + penalty share");
+        assertEq(vault.getSettlement(s).disputerReward.rew, 0.9e6, "dave's unclaimed share");
+        assertEq(vault.getSettlement(s).disputerReward.imd, 0, "erin's stranger carve-out took the whole imd-leg penalty");
         (a, b) = (_ledger(), _settled(s));
         _claimEverythingAndCheck();
         c = _ledger();
     }
 
-    function _s6Unwind() internal returns (bytes32 a, bytes32 b, bytes32 c) {
-        allowEmergency = true;
-        uint256 t = _create(author, address(usdc), 100e6);
-        _topUp(alice, t, 50e6);
-        uint256 s = _submit(doer, t);
-        _submit(doer2, t); // queued
-        _topUp(bob, t, 20e6); // pending
-        _dispute(dave, s);
-        _vote(s, 1, 1, 120, 20);
-        _warp(24 hours);
-        vault.poke(t);
-        _appeal(erin, s);
-        vm.mockCallRevert(address(vault), abi.encodeWithSignature("advanceFromSelf(uint256)", t), "");
-        _warp(12 hours + 30 days);
-        vault.emergencyExit(t);
-        vm.clearMockedCalls();
-        assertEq(uint8(_sub(s).outcome), uint8(Outcome.Unwound));
-        (a, b) = (_ledger(), _settled(s));
-        _claimEverythingAndCheck();
-        c = _ledger();
-    }
+    // A task the dev wallet cancels (Unwound) is covered in CancelTask.t.sol.
 }
 
 contract ReviewSplitRegression is SplitScenarios {
     // ---------------------------------------------------------------- golden ledgers
-    // Pinned keccak hashes of `_ledger()` / `_settled()` at three points of every scenario (A: after the main step,
-    // B: the settlement record, C: after everyone claimed). Any change in who ends up with how much money, in the
-    // treasury pots, the liabilities or the settlement record of these scenarios changes a hash and fails the test,
-    // so a refactor of the vault, the desks or the libraries must leave every scenario's money flow bit for bit the
-    // same (basefee 0, see the relayer test for basefee > 0).
+    // Each constant below is a hash of the ledger (see _ledger) or the settlement record (see _settled) for one
+    // scenario, checked against the inline assertions in that scenario. They are regenerated whenever a money
+    // rule or a field layout changes on purpose; the inline assertEq calls in each _sN...() function are
+    // re-verified by hand first, and the new hashes are then taken from the _golden() log output.
+    bytes32 internal constant S1_A = 0x4830ea4fcc6dc5027c1f37bcad5852e0b11e2b542d5bf3a1b4e0bf9f8b5d8d55;
+    bytes32 internal constant S1_B = 0x9fa15edfc0cb8cf85b0c22eb7c9c3ed8df8167d418c229d81e9ca6aac9b73151;
+    bytes32 internal constant S1_C = 0x65dcffba9fa5f218c43b4c3f810b8d61e0676b615cd88c2200be717a94fa422b;
+    bytes32 internal constant S2_A = 0x08d27cc2a8693d93d430a64d7a89b5d993f0bc3aaa0f468e9d26ec43c1adc65d;
+    bytes32 internal constant S2_B = 0x4405376f260e08bcc746fd3846e5f88865cdea78094a9958f536ec0804be9d4b;
+    bytes32 internal constant S2_C = 0x808551d4f18f1c9f9021bde675a4cd14dd60e843467f3bfd666fd1221b8bddd1;
+    bytes32 internal constant S3_A = 0xbb589401078dd43b88cbc7c1c174981c2ee68b3027a30d9ffdcf05a917cc491d;
+    bytes32 internal constant S3_B = 0x4ce121922bb3b346c9ee67fb29d07ea62251343468690cf77f7562794589778f;
+    bytes32 internal constant S3_C = 0x4755fc921943fe650cc0871884c69218df089678208e1ea5cc2d2410865f21ce;
+    bytes32 internal constant S4_A = 0x76984c0edfd7138e1eeafbca442dc75eac4cdca48dfce84a332a3dbe3eb570fd;
+    bytes32 internal constant S4_B = 0x03d1a17124e2592291958b4a07e9ebddd6f92850b0c514f803cb36cb4fd9720b;
+    bytes32 internal constant S4_C = 0xf9dbd032a0ab92846b8ead6e767bad8491ba22ce779070f3e67373d796740420;
+    bytes32 internal constant S5_A = 0x38cc28fed888cc3bcd65c4d5b72aa4ec16f7b4731c45419596c21cda6e366d7a;
+    bytes32 internal constant S5_B = 0x8633904b3b341d2229a33b142f9dc27dfbfd6a1d5b60434f1827f1155176328c;
+    bytes32 internal constant S5_C = 0xa82fdb047f774ed464eb049c7e6b261d5bc214d5978856d853700b07460f2f09;
 
-    bytes32 internal constant S1_A = 0x22d5763e9f8196a2a1728814e4c403d3fc069b72229a00a5f91c871682e06c48;
-    bytes32 internal constant S1_B = 0xd736f3ef9f022708292e1f1c9e1424ed295eef9cb403fab2527bc00e977734c2;
-    bytes32 internal constant S1_C = 0xa20148f4c6babeaeb66d8cf435cccc37166a13a108829e62840045c73651f28e;
-    bytes32 internal constant S2_A = 0x518a235f0c1526b9d512ca92d93ba32f67135a1371006d51d0a537834839e687;
-    bytes32 internal constant S2_B = 0x3d831530fbbdd66cdea1556a417cd5fe5037491de67979a57b61500a96969156;
-    bytes32 internal constant S2_C = 0x4b85e28628427b3e55a0f72dd0f099da71fe271d88facc1c7b8d1ddb6f9d6681;
-    bytes32 internal constant S3_A = 0xfb4d4f6c04789d4fdc73bdd4a0e6548d37b7ffb4cae451abfdaaeb3d25e40614;
-    bytes32 internal constant S3_B = 0xb921bbe8f3476495cb7bd1befbba652a4489251ed4f67280a954ddb2a1d4c989;
-    bytes32 internal constant S3_C = 0x78b1d4a46abd4aade8a8cc600c5978e6bc39e1863af33a4ce2345106251139ba;
-    bytes32 internal constant S4_A = 0x7b66f0e6533755140b835236e87b74253feda02b39770fd6f27acc68916850e3;
-    bytes32 internal constant S4_B = 0x30d8acb7d798adbc68c9b2ef707768ac73dd01f885f728f8a3bde2bc9baeed9f;
-    bytes32 internal constant S4_C = 0xf8636d3c3c6242c928e1b95ed1e0314cfbff07b4bb9ad6475692db311c139c12;
-    bytes32 internal constant S5_A = 0x09cf7be8609b435dd53d97898c7d8827a47005512ed8d6d77c99c4e67e08de53;
-    bytes32 internal constant S5_B = 0x843161a8350e8523cd695ad8fb6ad171135d8a1e29245ea9cf8127c3eb43e344;
-    bytes32 internal constant S5_C = 0x53a88094f0abc423ec26d36c9172fc8e9e0f3c0de5d921019491ad5e0c1f34b7;
-    bytes32 internal constant S6_A = 0xd373d87c45d06ea10f296ffb8b159c605b2f93d591641e657166d371512fec5f;
-    bytes32 internal constant S6_B = 0xff5fb91a665cedafa7a6de69019fa9499bf74b748a85798b0505e303cee661bd;
-    bytes32 internal constant S6_C = 0x329674609d70d3cf59f09a2c933128810d6e7853171d23ab6be0702d229ddc3b;
+    // disputeWindow/voteWindow/appealWindow/swarmTimeout hold the production values 24h/24h/24h/6h. Only every B
+    // (settlement record, which encodes timestamps) moves when a window value changes; A and C (the money)
+    // stay unchanged.
 
     function _golden(bytes32[3] memory got, bytes32[3] memory want) internal {
         emit log_named_bytes32("ledger after settlement", got[0]);
         emit log_named_bytes32("settlement record", got[1]);
         emit log_named_bytes32("ledger after every payout", got[2]);
-        assertEq(got[0], want[0], "ledger after settlement differs from the pre-split vault");
-        assertEq(got[1], want[1], "settlement record differs from the pre-split vault");
-        assertEq(got[2], want[2], "ledger after payouts differs from the pre-split vault");
+        assertEq(got[0], want[0], "ledger after settlement differs from the golden value");
+        assertEq(got[1], want[1], "settlement record differs from the golden value");
+        assertEq(got[2], want[2], "ledger after payouts differs from the golden value");
     }
 
     function test_golden_AcceptedAfterDispute_NftRight() public {
@@ -215,13 +256,13 @@ contract ReviewSplitRegression is SplitScenarios {
         _golden([a, b, c], [S2_A, S2_B, S2_C]);
     }
 
-    function test_golden_TieNobodyCallsSwarm() public {
-        (bytes32 a, bytes32 b, bytes32 c) = _s3TieNobodyCalls();
+    function test_golden_UndecidedNobodyCallsSwarm() public {
+        (bytes32 a, bytes32 b, bytes32 c) = _s3UndecidedNobodyCalls();
         _golden([a, b, c], [S3_A, S3_B, S3_C]);
     }
 
-    function test_golden_LargeCheckNoThenQueuedAccepted() public {
-        (bytes32 a, bytes32 b, bytes32 c) = _s4LargeCheckNoThenQueued();
+    function test_golden_RejectedThenQueuedAccepted() public {
+        (bytes32 a, bytes32 b, bytes32 c) = _s4RejectedThenQueuedAccepted();
         _golden([a, b, c], [S4_A, S4_B, S4_C]);
     }
 
@@ -230,84 +271,79 @@ contract ReviewSplitRegression is SplitScenarios {
         _golden([a, b, c], [S5_A, S5_B, S5_C]);
     }
 
-    function test_golden_EmergencyUnwind() public {
-        (bytes32 a, bytes32 b, bytes32 c) = _s6Unwind();
-        _golden([a, b, c], [S6_A, S6_B, S6_C]);
-    }
-
     // ---------------------------------------------------------------- what the split changed
 
     string internal constant R256 =
         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    // R200: a 200-byte Evidence.note the doer attaches at submission (under MAX_NOTE_BYTES, 512).
+    string internal constant R200 =
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567";
 
-    /// @dev Minor (gas -> money). The relayer reimbursement is measured inside DisputeDesk and now includes the hops
-    ///      DisputeDesk -> CaseDesk -> vault, the BallotChecker call and reading all of ParamsCore from the registry
-    ///      (about 19 cold slots per call). A batch of 10 NFTs at basefee 1 gwei: the pre-split monolith reimbursed
-    ///      216 448 gas, the new code 309 556 (+43%). The disputers pay (the dispute's ETH pot); what the pot did not
-    ///      cover goes to relayerShortfall and is paid from the loser's bond. No overpayment above the actual cost.
-    function test_minor_RelayerReimbursementGrewWithTheSplit() public {
-        uint256 t = _create(author, address(usdc), 50e6);
+    /// @dev A dispute collects no ETH and nobody is paid for voting gas: a third party cannot send another
+    ///      voter's ballot; the voter sends it themself.
+    function test_minor_NoEthInDisputes_VoterSendsOwnBallot() public {
+        uint256 t = _create(author, address(usdc), 50e6); // no author fee
         uint256 s = _submit(doer, t);
-        _dispute(dave, s); // pot 0.001 ETH
-        Ballot[] memory bs = new Ballot[](1);
-        bs[0] = _ballot(s, 2, 1, _ids(140, 10), voters[2]);
-        bytes memory cd = abi.encodeCall(ITaskVault.submitVotes, (s, bs));
-        uint256 cdGas;
-        for (uint256 i; i < cd.length; ++i) {
-            cdGas += cd[i] == 0 ? 4 : 16;
-        }
+        uint256 beforeDispute = address(vault).balance;
+        _dispute(dave, s); // no ETH collected
+        assertEq(address(vault).balance, beforeDispute, "dispute adds no ETH of its own");
+        // the vote carries no signature, the sender is the voter
+        bytes memory cd = abi.encodeCall(ITaskVault.vote, (s, 1, voters[2], _ids(140, 10)));
         vm.fee(1 gwei);
         vm.prank(relayer);
-        uint256 g0 = gasleft();
         (bool ok,) = address(vault).call(cd);
-        uint256 used = g0 - gasleft();
-        assertTrue(ok);
-        uint256 reimbursedGas = vault.credits(ETH, relayer) * BPS / (BPS + 1_000) / 1 gwei;
-        emit log_named_uint("reimbursed gas (pre-split monolith: 216448)", reimbursedGas);
-        emit log_named_uint("gas of the call + 21000 + calldata", used + 21_000 + cdGas);
-        assertGt(reimbursedGas, 280_000, "the split made a vote batch ~93k gas dearer for the disputers");
-        assertLe(reimbursedGas, used + 21_000 + cdGas, "never more than the batch really cost");
+        assertFalse(ok, "relaying another voter's ballot reverts");
+        vm.prank(voters[2]);
+        (ok,) = address(vault).call(cd);
+        assertTrue(ok, "the voter sends his own ballot");
+        assertEq(vault.getDispute(s).votesAccept, 10);
+        assertEq(vault.credits(ETH, voters[2]), 0, "nobody is paid for sending a vote");
     }
 
-    /// @dev Minor (gas). Lazy steps cost more: the step that asks an appeal question with 16 reasons of 256 bytes
-    ///      cost ~0.99M gas in the monolith, now ~1.11M; "swarm said no -> next large submission activated and
-    ///      asked" 0.51M -> 0.66M (mock Intake). The heaviest step still fits the emergencyExit budget (2.5M for the
-    ///      advanceFromSelf self-call), i.e. "a working machine always beats the emergency exit".
-    function test_minor_HeaviestLazyStepStillFitsTheEmergencyBudget() public {
+    /// @dev Gas of the heaviest separate step, logged: `askAppealSwarm` asks the appeal question (mock Intake).
+    /// @dev one dispute, one disputer - the question body is the one disputer's 256-byte reason and proof
+    ///      plus the doer's note; an appeal carries no text.
+    /// @dev The ask is played by `askAppealSwarm` (anyone), in a transaction of its own after `appeal`.
+    function test_minor_HeaviestLazyStepGasCost() public {
         uint256 t = _create(author, address(usdc), 50e6);
-        uint256 s = _submit(doer3, t);
-        for (uint256 i; i < 16; ++i) {
-            address d = makeAddr(string.concat("disputer", vm.toString(i)));
-            vm.deal(d, 1 ether);
-            imd.mint(d, 100e18);
-            vm.startPrank(d);
-            imd.approve(address(vault), type(uint256).max);
-            vault.dispute{value: 0.001 ether}(s, R256, 0.001 ether, _noSwap());
-            vm.stopPrank();
-        }
         vm.prank(doer3);
-        vault.reply(s, R256);
+        uint256 s = vault.submit(
+            t,
+            "https://x.com/doer/status/1",
+            Evidence("", R200),
+            0,
+            type(uint256).max,
+            _noSwap()
+        );
+        address d = makeAddr("disputer0");
+        _fund(d); // the dispute bond's rew part is in the task's own currency (USDC here), not IMD
+        vm.prank(d);
+        vault.dispute(s, R256, R256, _noSwap());
         _vote(s, 0, 2, 0, 120);
         _endVote(s); // reject at the vote end
+        // the ask is lazy: `appeal` only files it; the resupply (task rules +
+        // dispute reason/proof) and the ask itself happen in the separate, permissionless `askAppealSwarm`
+        // call.
+        RuleTexts memory rt = _genericRuleTexts();
+        rt.disputeReason = R256;
+        rt.disputerProofUri = R256;
         vm.prank(doer3);
-        vault.appeal(s, R256, type(uint256).max, _noSwap());
-        vm.prank(makeAddr("disputer0"));
-        vault.appealReply(s, R256);
+        vault.appeal(s, type(uint256).max, _noSwap());
+        assertEq(uint8(_phase(s)), uint8(Phase.Appealed));
         uint256 g0 = gasleft();
-        vm.prank(address(vault));
-        TaskVault(payable(address(vault))).advanceFromSelf{gas: 2_500_000}(t);
-        emit log_named_uint("gas of the heaviest lazy step (monolith ~985k)", g0 - gasleft());
-        assertEq(uint8(_phase(s)), uint8(Phase.Asked), "asked inside the emergency budget");
+        vault.askAppealSwarm(s, rt);
+        emit log_named_uint("gas of the heaviest separate step (askAppealSwarm)", g0 - gasleft());
+        assertEq(uint8(_phase(s)), uint8(Phase.Asked), "asked by askAppealSwarm");
     }
 
-    /// @dev On purpose: event names and arguments are the same (the vault ABI did not change, 33 events), but
-    ///      submission, dispute, vote and settlement events now come from CaseDesk and DisputeDesk, so an indexer
-    ///      must read all three addresses. The test pins the "event -> address" map so that moving an event between
-    ///      contracts cannot slip past an indexer silently.
+    /// @dev Intentional: the vault's ABI lists all 33 events, but
+    ///      submission, dispute, vote and settlement events come from CaseDesk and DisputeDesk. An off-chain
+    ///      reader reads all three addresses. This test pins the "event -> address" map so moving an event
+    ///      between contracts cannot slip past an off-chain reader silently.
     function test_events_EmitterMap() public {
         vm.recordLogs();
         _s2AppealSwarmOverturns();
-        _s3TieNobodyCalls();
+        _s3UndecidedNobodyCalls();
         Vm.Log[] memory logs = vm.getRecordedLogs();
         bytes32[12] memory fromVault = [
             TaskCreated.selector,
@@ -321,24 +357,21 @@ contract ReviewSplitRegression is SplitScenarios {
             ContributionWithdrawn.selector,
             ToppedUp.selector,
             AttestationIgnored.selector,
-            WithdrawAnnounced.selector // swarm audit #8: the notice on an active share
+            Burned.selector // burn shares (none in these two scenarios, mapped anyway)
         ];
-        bytes32[9] memory fromCase = [
+        bytes32[8] memory fromCase = [
             Submitted.selector,
             Activated.selector,
             NftDecided.selector,
             NoNftDecision.selector,
             SubmissionFinal.selector,
-            CheckPassed.selector,
             SwarmSilent.selector,
             AppealVoided.selector,
             DoerReplied.selector
         ];
-        bytes32[9] memory fromDispute = [
+        bytes32[7] memory fromDispute = [
             Disputed.selector,
-            VotesSubmitted.selector,
             VoteLib.VoteCounted.selector,
-            VoteLib.BallotSkipped.selector,
             Appealed.selector,
             AppealReplied.selector,
             SubmissionSettled.selector,
@@ -361,7 +394,7 @@ contract ReviewSplitRegression is SplitScenarios {
                 if (t0 == fromDispute[k]) want = address(disputeDesk);
             }
             assertTrue(want != address(0), "an event outside the map");
-            assertEq(e, want, "event moved to another contract: an indexer reads vault + caseDesk + disputeDesk");
+            assertEq(e, want, "event emitted by another contract: the indexer reads vault + caseDesk + disputeDesk");
             ++seen;
         }
         assertGt(seen, 40);

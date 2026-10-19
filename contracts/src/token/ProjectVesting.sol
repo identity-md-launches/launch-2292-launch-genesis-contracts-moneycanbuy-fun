@@ -9,8 +9,8 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 ///         streams linearly over `duration` (no cliff) from the moment its clock starts (`startOf`). Only the
 ///         `starter` starts a clock, by calling `release(token)` while this contract holds some of it: the starter is
 ///         the YoloSplitter, bound in the launch transaction (`bindStarter`), and it calls `release` right after it
-///         pays the vestings, so the $YOLO clocks start at the split and nobody can start one earlier with dust
-///         (audit A-03, swarm audit #2). Before its clock starts only the `unlocked` part is free. It
+///         pays the vestings, so the $YOLO clocks start at the split and nobody can start one earlier with dust.
+///         Before its clock starts only the `unlocked` part is free. It
 ///         knows no token in advance (`release(token)`, like OpenZeppelin's VestingWallet): it is deployed in a launch
 ///         of its own before the $YOLO launch, whose `remainderTo` must be a fixed address.
 ///         Whatever arrives counts, so the stream always covers exactly what was sent; a token the starter never

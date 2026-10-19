@@ -26,9 +26,9 @@ contract SybilDelegates is IDelegateRegistry {
 }
 
 /// @notice HiddenList's "3 distinct hide wallets" rule counts msg.sender, not the NFT holder. One holder of 10 NFTs
-///         delegates (delegate.xyz, free, no transfer) to two hot wallets and votes from three addresses: the round
-///         passes with a single real holder behind it. Fails on this code (status == HIDDEN_BY_VOTE); passes once
-///         distinct wallets are counted per NFT holder (ownerOf) instead of per caller.
+/// delegates (delegate.xyz, free, no transfer) to two hot wallets and votes from three addresses: the round
+/// passes with a single real holder behind it. Fails on this code (status == HIDDEN_BY_VOTE); passes once
+/// distinct wallets are counted per NFT holder (ownerOf) instead of per caller.
 contract HiddenListDelegateSybilTest is Test {
     HiddenList list;
     SybilNft nft;

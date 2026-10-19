@@ -2,13 +2,20 @@
 pragma solidity ^0.8.28;
 
 import {ParamsCore} from "../VaultParams.sol";
-import {Ballot, VoteBook, VoteLib, IBallotChecker} from "../libraries/VoteLib.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
+import {ParamsRegistry} from "../ParamsRegistry.sol";
+import {VoteBook, VoterRec, VoteLib, IVotePower} from "../libraries/VoteLib.sol";
 import {Desk} from "./Desk.sol";
-import {SubCore, Facts, Tally, AppealCore, ICaseDesk, IVault} from "./DeskApi.sol";
+import {SubCore, Facts, Tally, AppealCore, ICaseDesk, IVault, IDoerStake} from "./DeskApi.sol";
 import "../VaultTypes.sol";
 
+/// @dev YoloSweetener: a voter's share of a paid-out $YOLO bonus (anyone may trigger; money goes to payTo).
+interface IVoterBonus {
+    function claimVoter(uint256 taskId, address payTo) external;
+}
+
 /// @title DisputeDesk
-/// @notice Disputes, the NFT vote batches with relayer reimbursement, appeals and calls of the swarm, the money split
+/// @notice Disputes, the NFT votes (sent by the holders themselves), appeals and calls of the swarm, the money split
 ///         of a final submission and its lazy per-claimant payouts. The phases these actions move are kept by the
 ///         CaseDesk; the money is held by the vault.
 contract DisputeDesk is Desk {
@@ -17,265 +24,421 @@ contract DisputeDesk is Desk {
         return false;
     }
 
-    /// @notice The most of a loser penalty that relayer shortfall may take (20%): winners and correct votes always
-    ///         share the rest (swarm audit #3). Shortfall above it is not paid.
-    uint256 public constant MAX_SHORTFALL_BPS = 2_000;
-
-    bytes32 private constant VOTE_DOMAIN_TYPEHASH =
-        keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
-
     mapping(uint256 => Dispute) internal _disputes;
     mapping(uint256 => mapping(address => DisputerInfo)) internal _disputerInfo;
     mapping(uint256 => Appeal) internal _appeals;
+    mapping(uint256 => SideSpent) internal _sideSpent;
     mapping(uint256 => Settlement) internal _settlements;
     mapping(uint256 => VoteBook) internal _votes;
-    mapping(uint256 => mapping(address => uint256)) public relayerShortfall; // subId => relayer => IMD
 
-    IBallotChecker internal immutable ballotChecker;
+    /// @notice VotePower: who may vote with an NFT now, its owner or a delegate.xyz delegate.
+    IVotePower public immutable votePower;
+    /// @notice YoloLockHub: the doer's $YOLO lock behind the bonus of up to 4%; checked at the payout.
+    IDoerStake public immutable doerStake;
+    /// @notice $YOLO (a constructor argument of the launch plan; no bond has a $YOLO part).
+    address public immutable yolo;
 
-    constructor(address registry_, address imd_, address usdc_, address textRules_, address ballotChecker_)
-        Desk(registry_, imd_, usdc_, textRules_)
-    {
-        ballotChecker = IBallotChecker(ballotChecker_);
+    constructor(
+        address registry_,
+        address imd_,
+        address usdc_,
+        address textRules_,
+        address votePower_,
+        address yolo_,
+        address doerStake_
+    ) Desk(registry_, imd_, usdc_, textRules_) {
+        // the hub may be deployed after this desk in the same launch (LaunchPlan.core): no code check here
+        votePower = IVotePower(votePower_);
+        doerStake = IDoerStake(doerStake_);
+        yolo = yolo_;
+    }
+
+    /// @dev `a += b`, per currency.
+    function _addBond(Bond storage a, Bond memory b) private {
+        a.imd += b.imd;
+        a.rew += b.rew;
+    }
+
+    /// @dev Books a bond (fixed IMD + `extraImd` more IMD, its "rew" part in `currency`): the "rew" part merges
+    ///      into the same collectImd call (and its swap mode) when R is already in IMD.
+    function _collectBond(
+        address sender,
+        uint256 value,
+        address currency,
+        Bond memory b,
+        uint256 extraImd,
+        address swapAdapter,
+        ImdPay calldata payIn
+    ) private returns (uint256 ethNeeded) {
+        IVault bank = _bank();
+        bool rewIsImd = currency == address(imd);
+        ethNeeded = bank.collectImd(sender, value, b.imd + extraImd + (rewIsImd ? b.rew : 0), swapAdapter, payIn);
+        if (!rewIsImd) ethNeeded += bank.collectBondPart(sender, value, currency, b.rew);
     }
 
     // ================================================================== disputes and votes (through the vault)
 
-    /// @notice Dispute the active submission inside its window (any number of disputers; not its doer, who therefore
-    ///         can never answer an appeal as a disputer).
-    ///         Bond max(minBond, bondBase + 1% R) in IMD plus an ETH gas fee within [min, max] that funds the
-    ///         relaying of NFT votes. The first dispute starts the NFT vote and the doer's reply window.
-    function dispute(uint256 subId, string calldata reason, uint256 disputeFee, ImdPay calldata payIn) external routed {
+    /// @notice Dispute the active submission inside its window: one dispute, one disputer —
+    ///         whoever's transaction lands first; a second dispute
+    ///         reverts, their money untouched (not its doer, who therefore can never answer an appeal as a disputer).
+    ///         Bond 0.5 IMD fixed + 1% of the author's own reward in R's currency (no top-ups of others, no $YOLO
+    ///         add-on), never doubled. No ETH fee: NFT votes cost
+    ///         nothing to relay (the voter pays their own gas). The dispute starts the NFT vote (no doer
+    ///         reply step: the doer argues once, with the submission).
+    /// @param disputerProofUri the disputer's own link proving the submission fails
+    ///        the rule, optional (empty allowed; non-empty: same text rule and byte cap as `reason`). Only a hash of both is stored; whoever later
+    ///        calls the swarm resupplies them (RuleTexts), checked against it.
+    function dispute(uint256 subId, string calldata reason, string calldata disputerProofUri, ImdPay calldata payIn)
+        external
+        routed
+    {
         address sender = _sender();
         SubCore memory s = ICaseDesk(caseDesk).advanced(subId);
         Phase ph = s.phase;
         if (ph != Phase.Review && ph != Phase.Voting) revert WrongPhase();
-        if (sender == s.doer) revert DoerCannotDispute(); // audit C-01
+        if (sender == s.doer) revert DoerCannotDispute(); // the doer never disputes his own submission
         if (s.windowEnd == 0 || block.timestamp >= s.windowEnd) revert WindowClosed();
+        Dispute storage d = _disputes[subId];
+        if (d.disputer != address(0)) revert AlreadyDisputed();
         ParamsCore memory p = _params(s.version);
         _checkText(reason, p);
-        if (disputeFee < p.minDisputeFee || disputeFee > p.maxDisputeFee) revert FeeOutOfRange();
+        // the link is optional: empty passes and is left out of the swarm
+        // question (SwarmQuestion._member skips empty values, so no "claim_N_proof" definition); a non-empty link
+        // follows the same text rule as the reason.
+        if (bytes(disputerProofUri).length != 0) _checkText(disputerProofUri, p);
         DisputerInfo storage info = _disputerInfo[subId][sender];
-        if (info.bond != 0) revert AlreadyDisputed();
-        Dispute storage d = _disputes[subId];
 
-        uint256 bond = _bondFor(s.rewardImd, p.disputeBondBps, p);
-        bool contributor = _bank().isContributor(s.taskId, sender);
+        Bond memory bond = _disputeBond(s.base, p);
         info.bond = bond;
-        info.fee = disputeFee;
-        info.contributor = contributor;
-        info.reason = reason;
-        d.disputers.push(sender);
-        d.bondTotal += bond;
-        if (contributor) d.contributorBondTotal += bond;
-        d.feeTotal += disputeFee;
-        d.ethPot += disputeFee;
+        // 1 keccak256(abi.encode(...)) instead of 1 SSTORE string + a new string;
+        // both texts stay in this call's calldata and the Disputed event below.
+        info.reasonHash = keccak256(abi.encode(reason, disputerProofUri));
+        d.disputer = sender;
+        d.openBlock = uint32(block.number);
+        _addBond(d.bondTotal, bond);
 
-        if (ph == Phase.Review) ICaseDesk(caseDesk).startVote(subId, p.voteWindow, p.replyWindow);
-        IVault bank = _bank();
+        if (ph == Phase.Review) ICaseDesk(caseDesk).startVote(subId, p.voteWindow);
         uint256 value = _value();
-        uint256 ethNeeded = disputeFee + bank.collectImd(sender, value, bond, p.swapAdapter, payIn);
-        bank.bookEth(disputeFee, false);
-        bank.settleValue(sender, value, ethNeeded);
-        emit Disputed(subId, sender, bond, disputeFee, reason);
+        uint256 ethNeeded = _collectBond(sender, value, s.currency, bond, 0, p.swapAdapter, payIn);
+        _bank().settleValue(sender, value, ethNeeded);
+        emit Disputed(subId, sender, bond.imd, bond.rew, reason, disputerProofUri);
     }
 
-    /// @notice Relay a batch of signed NFT votes (anyone), until the vote end. Counting only: the NFT decides at
-    ///         the vote end (CaseDesk.step), never on a partial count (audit C-02). The relayer is
-    ///         reimbursed basefee x measured gas x (1 + markup), capped per newly counted vote, first from the dispute pot;
-    ///         the rest is recorded in IMD and paid from the loser penalty if the case ends with a winner, all relayers
-    ///         of a case together at most MAX_SHORTFALL_BPS (20%) of that penalty, pro rata.
-    function submitVotes(uint256 subId, Ballot[] calldata ballots) external routed {
-        // measured here: the vault's forwarding, its calldata and the 21k base are covered by relayBaseGas + 16 gas
-        // per calldata byte, counted over the canonical ABI encoding only
-        uint256 gasStart = gasleft();
-        SubCore memory s = ICaseDesk(caseDesk).advanced(subId);
-        if (s.phase != Phase.Voting || block.timestamp >= s.voteEnd) revert WrongPhase();
-        ParamsCore memory p = _params(s.version);
-        Dispute storage d = _disputes[subId];
-
-        VoteLib.Result memory r = VoteLib.castBallots(
-            _votes[subId],
-            ballots,
-            VoteLib.Context({
-                subId: subId,
-                voteEnd: s.voteEnd,
-                domainSeparator: voteDomainSeparator(),
-                nft: p.nft,
-                delegateRegistry: p.delegateRegistry
-            }),
-            ballotChecker
-        );
-        d.votesAccept += uint32(r.accept);
-        d.votesReject += uint32(r.reject);
-        d.walletsAccept += uint32(r.acceptWallets);
-        d.walletsReject += uint32(r.rejectWallets);
-
-        uint256 counted = r.accept + r.reject;
-        uint256 paid;
-        if (counted != 0) {
-            paid = _reimburseRelayer(subId, s.imdPerEth, p, counted, gasStart, _chargedCalldata(ballots));
+    /// @notice Cast an NFT vote with NFT ids, until the vote end: a vote by NFT id, with no registration. The
+    ///         sender owns each id now or is a delegate.xyz delegate of its owner
+    ///         (VotePower); each id votes once in a dispute (remembered here, an NFT passed on after its vote does not
+    ///         vote again in it); the vote counts the number of ids, no snapshot, no registration. More transactions
+    ///         for the same side add NFTs (many NFTs do not fit one block); the side cannot change. The voter
+    ///         pays their own gas. The reward of the vote goes to `payTo`. After every vote, an instant decision is
+    ///         tried once a side is ahead by instantDelta (CaseDesk.tryInstantDecision);
+    ///         otherwise the NFT decides at the vote end (CaseDesk.step). No timers are played here: while the vote
+    ///         runs, the task has no due step.
+    function vote(uint256 subId, uint8 side, address payTo, uint256[] calldata tokenIds) external routed {
+        (Phase ph, uint64 voteEnd, uint32 version) = ICaseDesk(caseDesk).voteState(subId);
+        if (ph != Phase.Voting || block.timestamp >= voteEnd) revert WrongPhase();
+        if ((side != VoteLib.SIDE_ACCEPT && side != VoteLib.SIDE_REJECT) || payTo == address(0)) revert BadVote();
+        uint256 power = tokenIds.length;
+        if (power == 0) revert NoTokens();
+        address voter = _sender();
+        VoteBook storage book = _votes[subId];
+        VoterRec memory r = book.recs[voter];
+        bool newWallet = r.side == 0;
+        if (!newWallet && r.side != side) revert AlreadyVoted();
+        // each id once per dispute: a repeat in the list or an id voted before reverts the whole vote
+        for (uint256 i; i < power; ++i) {
+            uint256 id = tokenIds[i];
+            uint256 bit = 1 << (id & 0xff);
+            uint256 word = book.votedIds[id >> 8];
+            if (word & bit != 0) revert TokenVoted(id);
+            book.votedIds[id >> 8] = word | bit;
         }
-        emit VotesSubmitted(subId, _sender(), r.accept, r.reject, paid);
+        uint256 bad = votePower.firstNotHeld(voter, tokenIds);
+        if (bad != 0) revert NotTokenHolder(tokenIds[bad - 1]);
+        Dispute storage d = _disputes[subId];
+        r.side = side;
+        if (voter == payTo) {
+            if (side == VoteLib.SIDE_ACCEPT) r.accept += uint120(power);
+            else r.reject += uint120(power);
+        } else {
+            VoterRec storage pr = book.recs[payTo];
+            if (side == VoteLib.SIDE_ACCEPT) pr.accept += uint120(power);
+            else pr.reject += uint120(power);
+        }
+        book.recs[voter] = r;
+        emit VoteLib.VoteCounted(subId, voter, payTo, side, power);
+
+        Tally memory v = _tally(d);
+        // a wallet counts once, at its first vote in the dispute
+        if (side == VoteLib.SIDE_ACCEPT) {
+            v.accept += power;
+            if (newWallet) ++v.walletsAccept;
+        } else {
+            v.reject += power;
+            if (newWallet) ++v.walletsReject;
+        }
+        d.votesAccept = SafeCast.toUint32(v.accept);
+        d.votesReject = SafeCast.toUint32(v.reject);
+        d.walletsAccept = SafeCast.toUint32(v.walletsAccept);
+        d.walletsReject = SafeCast.toUint32(v.walletsReject);
+        // the same test as CaseDesk._decide: the case desk is called only when the vote can decide now
+        if (v.accept != v.reject) {
+            (,, uint32 instantDelta, uint32 minWallets) = ParamsRegistry(registry).voteParams(version);
+            bool acceptWins = v.accept > v.reject;
+            uint256 diff = acceptWins ? v.accept - v.reject : v.reject - v.accept;
+            uint256 wallets = acceptWins ? v.walletsAccept : v.walletsReject;
+            if (diff >= instantDelta && wallets >= minWallets) ICaseDesk(caseDesk).tryInstantDecision(subId, v);
+        }
     }
 
     // ================================================================== appeals and calls of the swarm
 
     /// @notice Appeal an NFT decision within the appeal window (24h from the decision, or from the last silence
-    ///         of the swarm). Anyone may appeal (the doer only a rejection of his submission); the appellant takes the
-    ///         side opposite to the decision and pays a
-    ///         dispute bond plus the live swarm fee now. The question is asked lazily (any call on the task, e.g.
-    ///         poke) after the opponent replied or the reply window ended.
-    ///         `maxImdIn` caps bond + fee: the Intake owner can change the price without delay.
-    function appeal(uint256 subId, string calldata reason, uint256 maxImdIn, ImdPay calldata payIn) external routed {
+    ///         of the swarm). Anyone may appeal (the doer only a rejection of their submission); the appellant takes the
+    ///         side opposite to the decision and pays a dispute bond plus the live swarm fee now. The question is
+    ///         asked lazily, at the next call that carries it: `step`/`poke` cannot carry the resupplied text, so
+    ///         the ask happens via the separate permissionless `askAppealSwarm`, not in this transaction.
+    ///         `maxImdIn` caps bond + fee: the Intake price may differ at call time. The doer or the
+    ///         disputer appealing for their own side posts no second bond: the fee comes out of their dispute bond
+    ///         (`_fundCall`).
+    /// @dev No `reason` parameter: an appeal is a button, not
+    ///      a text field. No `RuleTexts` here either: this call only files the appeal and funds
+    ///      it; the text resupply + hash check happens later, in `askAppealSwarm`.
+    function appeal(uint256 subId, uint256 maxImdIn, ImdPay calldata payIn) external routed {
         address sender = _sender();
         SubCore memory s = ICaseDesk(caseDesk).advanced(subId);
         if (s.phase != Phase.Decided) revert WrongPhase();
-        // the doer may appeal a rejection, never his own acceptance (swarm audit #4, as DoerCannotDispute)
-        if (sender == s.doer && s.nftDecision != Verdict.Reject) revert DoerCannotDispute();
+        // the doer may appeal a rejection, never their own acceptance (swarm audit 117cf05a #4, as DoerCannotDispute)
+        bool sidesDoer = s.nftDecision == Verdict.Reject;
+        if (sender == s.doer && !sidesDoer) revert DoerCannotDispute();
         ParamsCore memory p = _params(s.version);
-        _checkText(reason, p);
         uint256 fee = _swarmPrice(p);
         if (fee == 0) revert ActionNotSold();
         Appeal storage a = _appeals[subId];
-        uint256 bond = _bondFor(s.rewardImd, p.disputeBondBps, p);
-        if (bond + fee > maxImdIn) revert CostAboveMax();
         a.appellant = sender;
-        a.sidesDoer = s.nftDecision == Verdict.Reject;
-        a.contributor = _bank().isContributor(s.taskId, sender);
-        a.replyEnd = uint64(block.timestamp) + p.appealReplyWindow;
-        a.bond = bond;
-        a.funds = fee;
-        a.reason = reason;
+        a.sidesDoer = sidesDoer;
+        uint256 ethNeeded = _fundCall(a, subId, s, fee, maxImdIn, p, payIn);
         ICaseDesk(caseDesk).markAppealed(subId);
-        IVault bank = _bank();
-        uint256 value = _value();
-        bank.settleValue(sender, value, bank.collectImd(sender, value, bond + fee, p.swapAdapter, payIn));
-        emit Appealed(subId, sender, bond, fee, reason);
+        _bank().settleValue(sender, _value(), ethNeeded);
+        emit Appealed(subId, sender, a.bond.imd, a.bond.rew, fee);
+    }
+
+    /// @notice Lazy ask for a filed appeal: `appeal` above cannot carry the swarm's text
+    ///         payload and ask at once in the same transaction, because the lazy step
+    ///         (`CaseDesk.step`/`TaskVault.poke`) has no text channel (same limit every other lazy
+    ///         transition already has). Anyone may call this once a submission sits in `Phase.Appealed`, resupplying
+    ///         the task rules + the filed dispute's reason/proof link; `CaseDesk.askAppeal`/`_ask` check them against
+    ///         the stored hashes and revert `RulesMismatch` otherwise.
+    ///         The fee/bond were already fixed in `appeal`, this only spends them.
+    function askAppealSwarm(uint256 subId, RuleTexts calldata rt) external routed {
+        Appeal storage a = _appeals[subId];
+        uint256 funds = a.funds + a.fromBond; // read before the ask: a void question drops the caller below
+        ICaseDesk(caseDesk).askAppeal(subId, funds, rt);
     }
 
     /// @notice The NFT did not decide (NoDecision window): anyone may call the swarm, paying the live fee plus a
-    ///         dispute bond, and picks a side (the doer only his own). The swarm is asked at once with the disputes and the doer's reply.
-    ///         Win: the loser reimburses the fee and the caller shares the loser bond as a winner. Silence: the fee
-    ///         is lost, the bond is credited back and a new window starts. Nobody calls: accepted (tie rule).
-    function callSwarm(uint256 subId, bool sidesDoer, string calldata reason, uint256 maxImdIn, ImdPay calldata payIn)
+    ///         dispute bond, and picks a side (the doer only their own). The swarm is asked at once with the disputes
+    ///         and the doer's submission text. Win: the caller shares the loser bond as a winner (no separate fee refund:
+    ///         the fee is not returned to them apart from that). Silence: the fee stays paid (the
+    ///         bond is credited back) and a new window starts. Nobody calls: accepted, the disputer bonds to the doer.
+    ///         The doer, or the disputer against the doer, calls out of their dispute bond (no second bond, `_fundCall`).
+    /// @dev No `reason` parameter (same button-not-text rule as `appeal`). `rt`: this call asks the
+    ///      swarm at once, in the same transaction, so the sender resupplies the task's rule texts and the filed
+    ///      dispute's reason/proof link here, checked in `CaseDesk._ask` against
+    ///      Task.rulesHash / DisputerInfo.reasonHash. `rt.disputeReason`/`rt.disputerProofUri` must match what the
+    ///      disputer filed; the caller need not be the disputer themselves, only know what they filed (the `Disputed`
+    ///      event).
+    function callSwarm(uint256 subId, bool sidesDoer, uint256 maxImdIn, ImdPay calldata payIn, RuleTexts calldata rt)
         external
         routed
     {
         address sender = _sender();
         SubCore memory s = ICaseDesk(caseDesk).advanced(subId);
         if (s.phase != Phase.NoDecision) revert WrongPhase();
-        if (sender == s.doer && !sidesDoer) revert DoerCannotDispute(); // swarm audit #4
+        if (sender == s.doer && !sidesDoer) revert DoerCannotDispute(); // swarm audit 117cf05a #4
         ParamsCore memory p = _params(s.version);
-        _checkText(reason, p);
         uint256 price = _swarmPrice(p);
         if (price == 0) revert ActionNotSold();
-        uint256 bond = _bondFor(s.rewardImd, p.disputeBondBps, p);
-        if (bond + price > maxImdIn) revert CostAboveMax();
-        IVault bank = _bank();
-        uint256 value = _value();
-        uint256 ethNeeded = bank.collectImd(sender, value, bond + price, p.swapAdapter, payIn);
         Appeal storage a = _appeals[subId];
         a.appellant = sender;
         a.sidesDoer = sidesDoer;
-        a.contributor = _bank().isContributor(s.taskId, sender);
-        a.bond = bond;
-        a.reason = reason; // goes into the question as "appeal"
-        (bool ok, uint256 spent) = ICaseDesk(caseDesk).askEscalation(subId, price);
+        uint256 ethNeeded = _fundCall(a, subId, s, price, maxImdIn, p, payIn);
+        (bool ok, uint256 spent) = ICaseDesk(caseDesk).askEscalation(subId, price, rt);
         if (!ok) revert SwarmUnavailable();
-        a.spent = spent;
-        a.funds = price - spent;
-        emit SwarmCalled(subId, sender, sidesDoer, bond, price);
-        bank.settleValue(sender, value, ethNeeded);
+        _charge(subId, a, spent);
+        emit SwarmCalled(subId, sender, sidesDoer, a.bond.imd, a.bond.rew, price);
+        _bank().settleValue(sender, _value(), ethNeeded);
     }
 
-    /// @notice The appellant's opponent replies once: the doer, or any disputer if the appeal sides with the doer.
-    function appealReply(uint256 subId, string calldata text) external routed {
-        address sender = _sender();
-        SubCore memory s = ICaseDesk(caseDesk).subCore(subId);
-        Appeal storage a = _appeals[subId];
-        if (s.phase != Phase.Appealed || block.timestamp >= a.replyEnd) revert WindowClosed();
-        if (a.replied) revert AlreadyReplied();
-        bool opponent = a.sidesDoer ? _disputerInfo[subId][sender].bond != 0 : sender == s.doer;
-        if (!opponent) revert NotOpponent();
-        _checkText(text, _params(s.version));
-        a.replied = true;
-        a.reply = text;
-        emit AppealReplied(subId, sender, text);
+    /// @dev What the swarm caller `a.appellant` puts in for a question costing `fee`, collected now. A side of the
+    ///      dispute calling for itself (the doer; the disputer against the doer) posts no second bond. Its first
+    ///      call is paid out of its dispute bond's IMD, from its wallet only what that does not cover;
+    ///      once its bond has paid the swarm, every later call of that side is paid wholly
+    ///      from its wallet, still with no second bond. Anyone else posts
+    ///      a dispute bond and pays the whole fee. At most `maxImdIn` IMD.
+    function _fundCall(
+        Appeal storage a,
+        uint256 subId,
+        SubCore memory s,
+        uint256 fee,
+        uint256 maxImdIn,
+        ParamsCore memory p,
+        ImdPay calldata payIn
+    ) private returns (uint256 ethNeeded) {
+        address sender = a.appellant;
+        bool sidesDoer = a.sidesDoer;
+        Dispute storage d = _disputes[subId];
+        Bond memory bond;
+        uint256 fromBond;
+        if (sender == s.doer ? sidesDoer : sender == d.disputer && !sidesDoer) {
+            SideSpent memory sp = _sideSpent[subId];
+            // the bond pays the side's first call only (a void call spent nothing: the next one is still the first)
+            if ((sidesDoer ? sp.doer : sp.disputer) == 0) {
+                uint256 bondImd = sidesDoer ? ICaseDesk(caseDesk).doerBondImd(subId) : d.bondTotal.imd;
+                fromBond = fee < bondImd ? fee : bondImd;
+            }
+        } else {
+            bond = _disputeBond(s.base, p);
+        }
+        uint256 pay = fee - fromBond;
+        if (bond.imd + pay > maxImdIn) revert CostAboveMax();
+        a.bond = bond;
+        a.fromBond = fromBond;
+        a.funds = pay;
+        ethNeeded = _collectBond(sender, _value(), s.currency, bond, pay, p.swapAdapter, payIn);
     }
+
+    /// @dev The question was asked for `spent`: a side's own bond pays first, then the caller's prepaid fee.
+    function _charge(uint256 subId, Appeal storage a, uint256 spent) private {
+        uint256 fromBond = a.fromBond;
+        uint256 own = spent < fromBond ? spent : fromBond;
+        if (own != 0) {
+            if (a.sidesDoer) _sideSpent[subId].doer += uint128(own);
+            else _sideSpent[subId].disputer += uint128(own);
+        }
+        a.fromBond = 0;
+        a.funds -= spent - own;
+        a.spent = spent;
+    }
+
+    // No opponent-reply step on an appeal — it goes to the swarm at
+    // once, with the doer's "why honest" text (Submission.doerNote, written at submission) read directly.
 
     // ================================================================== claims (through the vault)
 
-    /// @notice Disputer: own bond back if the disputers won or on an emergency exit, a share of the won bonds
-    ///         (non-contributors only, pro rata to bonds), and the pro-rata leftover of the dispute ETH pot
-    ///         (pro rata to fees, in every outcome).
+    /// @notice Disputer: own bond back if the disputers won or the task was cancelled, plus a pro-rata share of the
+    ///         won bonds. Treated like any other disputer whether or not they are also the task's author or a
+    ///         contributor.
     function claimDisputer(uint256 subId) external routed {
         address sender = _sender();
         SubCore memory s = ICaseDesk(caseDesk).advanced(subId); // play due timers first: no separate poke needed
         if (s.phase != Phase.Final) revert NotFinal();
         DisputerInfo storage info = _disputerInfo[subId][sender];
-        if (info.bond == 0 || info.claimed) revert NothingToClaim();
+        if (info.bond.imd == 0 || info.claimed) revert NothingToClaim();
         info.claimed = true;
         Settlement storage st = _settlements[subId];
         IVault bank = _bank();
-        uint256 imdAmount = st.neutral || st.disputersWon ? info.bond : 0;
-        if (st.disputersWon && !info.contributor && st.disputerRewardBonds != 0) {
-            uint256 share = st.disputerReward * info.bond / st.disputerRewardBonds;
-            st.disputerReward -= share;
-            st.disputerRewardBonds -= info.bond;
-            // became a contributor after disputing: the share goes to the treasury
-            if (_bank().isContributor(s.taskId, sender)) bank.addTreasury(address(imd), share);
-            else imdAmount += share;
+        Bond memory payout;
+        if (st.neutral || st.disputersWon) {
+            payout = info.bond;
+            payout.imd -= _sideSpent[subId].disputer; // its own swarm calls (one dispute, one disputer)
         }
-        uint256 ethAmount;
-        if (st.ethFeesLeft != 0) {
-            ethAmount = st.ethLeft * info.fee / st.ethFeesLeft;
-            st.ethLeft -= ethAmount;
-            st.ethFeesLeft -= info.fee;
+        if (st.disputersWon) {
+            if (st.disputerRewardBonds.imd != 0) {
+                uint256 share = st.disputerReward.imd * info.bond.imd / st.disputerRewardBonds.imd;
+                st.disputerReward.imd -= share;
+                st.disputerRewardBonds.imd -= info.bond.imd;
+                payout.imd += share;
+            }
+            if (st.disputerRewardBonds.rew != 0) {
+                uint256 share = st.disputerReward.rew * info.bond.rew / st.disputerRewardBonds.rew;
+                st.disputerReward.rew -= share;
+                st.disputerRewardBonds.rew -= info.bond.rew;
+                payout.rew += share;
+            }
         }
-        emit DisputerClaimed(subId, sender, imdAmount, ethAmount);
-        bank.pay(address(imd), sender, imdAmount);
-        bank.pay(ETH, sender, ethAmount);
+        emit DisputerClaimed(subId, sender, payout.imd, payout.rew);
+        bank.pay(address(imd), sender, payout.imd);
+        bank.pay(s.currency, sender, payout.rew);
     }
 
     /// @notice NFT voter reward for `payTo` (anyone may trigger; money goes to payTo). Only when the NFT decided
-    ///         and the final outcome agrees: a share of the loser bonds (IMD) and of the fee (reward currency),
-    ///         pro rata to the votes on the final side.
+    ///         and the final outcome agrees: a share of the loser bonds (per currency) and of the reward fee
+    ///         (reward currency), pro rata to the votes on the final side.
     function claimVoterReward(uint256 subId, address payTo) external routed {
-        SubCore memory s = ICaseDesk(caseDesk).advanced(subId); // play due timers first: no separate poke needed
-        if (s.phase != Phase.Final) revert NotFinal();
-        Settlement storage st = _settlements[subId];
-        VoteBook storage vb = _votes[subId];
-        uint256 n = s.outcome == Outcome.Accepted ? vb.acceptVotesOf[payTo] : vb.rejectVotesOf[payTo];
-        uint256 left = st.voterVotesLeft;
-        if (n == 0 || left == 0 || vb.claimed[payTo] != 0) revert NothingToClaim();
-        vb.claimed[payTo] = 1;
-        uint256 imdShare = st.voterImd * n / left;
-        uint256 feeShare = st.voterFee * n / left;
-        st.voterImd -= imdShare;
-        st.voterFee -= feeShare;
-        st.voterVotesLeft = left - n;
-        emit VoterRewardClaimed(subId, payTo, n, imdShare, feeShare);
+        (, address currency, uint256 imdShare, uint256 rewShare,) = _claimVoter(subId, payTo, true);
         IVault bank = _bank();
         bank.pay(address(imd), payTo, imdShare);
-        bank.pay(s.currency, payTo, feeShare);
+        bank.pay(currency, payTo, rewShare);
     }
 
-    /// @notice Relayer: IMD for gas the dispute pot could not cover, from the loser penalty (not on emergency exit).
-    function claimRelayerShortfall(uint256 subId) external routed {
-        address sender = _sender();
+    /// @notice The voter rewards of `payTo` on many submissions in one transaction: every
+    ///         submission with something to claim pays as claimVoterReward would; one without is skipped. Every
+    ///         currency is paid once, summed. Reverts only when none of them had anything. An accepted submission
+    ///         with a $YOLO add-on also claims `payTo`'s share of its paid-out bonus (YoloSweetener.claimVoter; skipped
+    ///         if the bonus is not paid out yet or nothing is left for payTo there).
+    function claimVoterRewards(uint256[] calldata subIds, address payTo) external routed {
+        uint256 imdTotal;
+        address[] memory cur = new address[](subIds.length);
+        uint256[] memory amt = new uint256[](subIds.length);
+        uint256 n;
+        bool any;
+        address sweet;
+        for (uint256 i; i < subIds.length; ++i) {
+            (bool ok, address currency, uint256 imdShare, uint256 rewShare, uint256 bonusTask) =
+                _claimVoter(subIds[i], payTo, false);
+            if (!ok) continue;
+            if (bonusTask != 0) {
+                if (sweet == address(0)) sweet = _bank().sweetener();
+                try IVoterBonus(sweet).claimVoter(bonusTask, payTo) {} catch {}
+            }
+            any = true;
+            imdTotal += imdShare;
+            uint256 k;
+            while (k < n && cur[k] != currency) ++k;
+            if (k == n) cur[n++] = currency;
+            amt[k] += rewShare;
+        }
+        if (!any) revert NothingToClaim();
+        IVault bank = _bank();
+        bank.pay(address(imd), payTo, imdTotal);
+        for (uint256 k; k < n; ++k) {
+            bank.pay(cur[k], payTo, amt[k]);
+        }
+    }
+
+    /// @dev Books the voter reward of `payTo` on `subId`. Nothing to claim: reverts (NotFinal / NothingToClaim) when
+    ///      `strict`, else returns ok = false. `rewShare` includes the reward-fee share (both in the reward currency).
+    ///      `bonusTask`: the task id when the submission was accepted with a $YOLO add-on (its bonus has a voter pool).
+    function _claimVoter(uint256 subId, address payTo, bool strict)
+        private
+        returns (bool ok, address currency, uint256 imdShare, uint256 rewShare, uint256 bonusTask)
+    {
         SubCore memory s = ICaseDesk(caseDesk).advanced(subId); // play due timers first: no separate poke needed
-        if (s.phase != Phase.Final) revert NotFinal();
+        if (s.phase != Phase.Final) {
+            if (strict) revert NotFinal();
+            return (false, address(0), 0, 0, 0);
+        }
         Settlement storage st = _settlements[subId];
-        if (st.neutral) revert NothingToClaim();
-        uint256 mine = relayerShortfall[subId][sender];
-        if (mine == 0) revert NothingToClaim();
-        relayerShortfall[subId][sender] = 0;
-        uint256 amount = st.shortfallPay * mine / st.shortfallLeft;
-        st.shortfallPay -= amount;
-        st.shortfallLeft -= mine;
-        emit RelayerShortfallClaimed(subId, sender, amount);
-        _bank().pay(address(imd), sender, amount);
+        VoterRec storage r = _votes[subId].recs[payTo];
+        uint256 n = s.outcome == Outcome.Accepted ? r.accept : r.reject;
+        uint256 left = st.voterVotesLeft;
+        if (n == 0 || left == 0 || r.claimed != 0) {
+            if (strict) revert NothingToClaim();
+            return (false, address(0), 0, 0, 0);
+        }
+        r.claimed = 1;
+        ok = true;
+        imdShare = st.voterBond.imd * n / left;
+        rewShare = st.voterBond.rew * n / left;
+        uint256 feeShare = st.voterFee * n / left;
+        st.voterBond.imd -= imdShare;
+        st.voterBond.rew -= rewShare;
+        st.voterFee -= feeShare;
+        st.voterVotesLeft = left - n;
+        emit VoterRewardClaimed(subId, payTo, n, imdShare, rewShare, feeShare);
+        currency = s.currency;
+        rewShare += feeShare;
+        if (s.addon != 0 && s.outcome == Outcome.Accepted) bonusTask = s.taskId;
     }
 
     // ================================================================== for the case desk and the question builder
@@ -288,51 +451,49 @@ contract DisputeDesk is Desk {
         Appeal storage a = _appeals[subId];
         c.appellant = a.appellant;
         c.sidesDoer = a.sidesDoer;
-        c.replied = a.replied;
-        c.replyEnd = a.replyEnd;
-        c.funds = a.funds;
+        c.funds = a.funds + a.fromBond; // what the question may cost
     }
 
-    /// @notice The first `maxClaims` dispute reasons in filing order and the current caller's texts (read by the
-    ///         SwarmQuestionBuilder).
-    function questionPart(uint256 subId, uint256 maxClaims)
+    /// @notice The one dispute reason + proof link (one dispute, one disputer), resupplied
+    ///         by the caller of the swarm and checked against DisputerInfo.reasonHash
+    ///         here, `RulesMismatch` otherwise. `maxClaims` bounds the parameters (the body size check);
+    ///         this returns 0 or 1 claim. No `appealReason` (button
+    ///         not text). No opponent-reply text — the doer's "why honest" (Submission.doerNote,
+    ///         written at submission) is read by the question builder directly from the vault, not through here.
+    function questionPart(uint256 subId, uint256 maxClaims, string calldata reason, string calldata disputerProofUri)
         external
         view
-        returns (string[] memory claims, string memory appealReason, string memory appealReply_)
+        returns (string[] memory claims, string[] memory claimProofs)
     {
-        address[] storage list = _disputes[subId].disputers;
-        uint256 n = list.length < maxClaims ? list.length : maxClaims;
+        address disputer = _disputes[subId].disputer;
+        uint256 n = disputer == address(0) || maxClaims == 0 ? 0 : 1;
         claims = new string[](n);
-        for (uint256 i; i < n; ++i) {
-            claims[i] = _disputerInfo[subId][list[i]].reason;
+        claimProofs = new string[](n);
+        if (n != 0) {
+            if (keccak256(abi.encode(reason, disputerProofUri)) != _disputerInfo[subId][disputer].reasonHash) {
+                revert RulesMismatch();
+            }
+            claims[0] = reason;
+            claimProofs[0] = disputerProofUri;
         }
-        Appeal storage a = _appeals[subId];
-        return (claims, a.reason, a.reply);
     }
 
     /// @notice The appeal question was asked: its price leaves the prepaid fee.
     function appealAsked(uint256 subId, uint256 spent) external only(caseDesk) {
-        Appeal storage a = _appeals[subId];
-        a.funds -= spent;
-        a.spent = spent;
+        _charge(subId, _appeals[subId], spent);
     }
 
-    /// @notice The caller's question was void or the swarm stayed silent: his bond and unspent fee are his again.
+    /// @notice The caller's question was void or the swarm stayed silent: their bond and unspent fee are theirs again.
     function dropCaller(uint256 subId) external only(caseDesk) {
-        Appeal storage a = _appeals[subId];
-        _bank().credit(address(imd), a.appellant, a.bond + a.funds);
+        _refundCaller(_appeals[subId], ICaseDesk(caseDesk).subCore(subId).currency);
         delete _appeals[subId];
     }
 
-    /// @notice The money of a final submission: the dispute pot leftover goes back to the disputers in every outcome;
-    ///         an emergency exit returns every bond; otherwise the reward is paid (accepted) and the loser bonds are
-    ///         split (`_settleDecided`). Credits only; never transfers.
-    function settle(uint256 subId, Outcome o, bool tie, Facts calldata f) external only(caseDesk) {
+    /// @notice The money of a final submission: a cancellation (TaskVault.cancelTask) returns every bond; otherwise the reward is paid
+    ///         (accepted) and the loser bonds are split (`_settleDecided`). Credits only; never transfers.
+    function settle(uint256 subId, Outcome o, Facts calldata f) external only(caseDesk) {
         Settlement storage st = _settlements[subId];
         Dispute storage d = _disputes[subId];
-        st.ethLeft = d.ethPot;
-        st.ethFeesLeft = d.feeTotal;
-        d.ethPot = 0;
 
         if (o == Outcome.Unwound) {
             st.neutral = true;
@@ -344,7 +505,7 @@ contract DisputeDesk is Desk {
             bool nftRight = f.nftDecision != Verdict.None && (f.nftDecision == Verdict.Accept) == doerWins;
             if (nftRight) st.voterVotesLeft = doerWins ? d.votesAccept : d.votesReject;
             if (doerWins) _payReward(subId, f, nftRight, p);
-            _settleDecided(subId, f, doerWins, nftRight, tie, p);
+            _settleDecided(subId, f, doerWins, nftRight, p);
         }
     }
 
@@ -367,237 +528,251 @@ contract DisputeDesk is Desk {
     }
 
     function votesOf(uint256 subId, address payTo) external view returns (uint256 accept, uint256 reject) {
-        return (_votes[subId].acceptVotesOf[payTo], _votes[subId].rejectVotesOf[payTo]);
+        VoterRec storage r = _votes[subId].recs[payTo];
+        return (r.accept, r.reject);
     }
 
     function voterClaimed(uint256 subId, address payTo) external view returns (bool) {
-        return _votes[subId].claimed[payTo] != 0;
+        return _votes[subId].recs[payTo].claimed != 0;
     }
 
-    /// @notice For each tokenId, whether it already voted on a submission.
-    function tokensVoted(uint256 subId, uint256[] calldata tokenIds) external view returns (bool[] memory voted) {
-        voted = new bool[](tokenIds.length);
-        for (uint256 i; i < tokenIds.length; ++i) {
-            uint256 id = tokenIds[i];
-            voted[i] = _votes[subId].usedTokens[id >> 8] & (1 << (id & 0xff)) != 0;
-        }
+    /// @notice Whether `voter` already voted on a submission (then only for the same side again).
+    function hasVoted(uint256 subId, address voter) external view returns (bool) {
+        return _votes[subId].recs[voter].side != 0;
     }
 
-    /// @notice Whether an NFT already voted on a submission.
+    /// @notice The side `voter` voted on a submission: 0 none, 1 accept, 2 reject.
+    function sideOf(uint256 subId, address voter) external view returns (uint8) {
+        return _votes[subId].recs[voter].side;
+    }
+
+    /// @notice Whether NFT `tokenId` already voted on a submission (each id once per dispute).
     function tokenVoted(uint256 subId, uint256 tokenId) external view returns (bool) {
-        return _votes[subId].usedTokens[tokenId >> 8] & (1 << (tokenId & 0xff)) != 0;
-    }
-
-    /// @notice EIP-712 domain of NFT votes: ("IMD TaskVault", "1", chainid, vault).
-    function voteDomainSeparator() public view returns (bytes32) {
-        return
-            keccak256(
-                abi.encode(VOTE_DOMAIN_TYPEHASH, keccak256("IMD TaskVault"), keccak256("1"), block.chainid, vault)
-            );
-    }
-
-    /// @notice Dispute bond of `subId`. Appealing or calling the swarm costs the same bond plus `quoteSwarmFee`.
-    function quoteDisputeBond(uint256 subId) external view returns (uint256) {
-        SubCore memory s = ICaseDesk(caseDesk).subCore(subId);
-        ParamsCore memory p = _params(s.version);
-        return _bondFor(s.rewardImd, p.disputeBondBps, p);
-    }
-
-    /// @notice Live swarm fee (IMD) for questions about `subId`; 0 = the Intake does not sell the action now.
-    function quoteSwarmFee(uint256 subId) external view returns (uint256) {
-        return _swarmPrice(_params(ICaseDesk(caseDesk).subCore(subId).version));
+        return _votes[subId].votedIds[tokenId >> 8] & (1 << (tokenId & 0xff)) != 0;
     }
 
     // ================================================================== internal
-
-    /// @dev Calldata bytes the relayer is paid for: the length of the canonical ABI encoding of
-    ///      `submitVotes(uint256, Ballot[])`, never more than what was actually sent. A relayer who appends a tail
-    ///      (zero bytes cost it 4 or the EIP-7623 floor, reimbursement was 16) is not paid for it.
-    function _chargedCalldata(Ballot[] calldata ballots) private pure returns (uint256) {
-        // selector + subId + offset of the array + its length + one offset per ballot
-        uint256 canonical = 4 + 32 + 32 + 32 + ballots.length * 32;
-        for (uint256 i; i < ballots.length; ++i) {
-            // five head slots (voter, side, payTo, two offsets), then both dynamic arrays with their length slot
-            canonical += 160 + 32 + ballots[i].tokenIds.length * 32 + 32 + ((ballots[i].signature.length + 31) / 32) * 32;
-        }
-        uint256 sent = msg.data.length - SUFFIX;
-        return canonical < sent ? canonical : sent;
-    }
 
     function _tally(Dispute storage d) private view returns (Tally memory) {
         return Tally(d.votesAccept, d.votesReject, d.walletsAccept, d.walletsReject);
     }
 
-    function _reimburseRelayer(
-        uint256 subId,
-        uint256 imdPerEth,
-        ParamsCore memory p,
-        uint256 counted,
-        uint256 gasStart,
-        uint256 calldataBytes
-    ) private returns (uint256 fromPot) {
-        Dispute storage d = _disputes[subId];
-        uint256 gasUsed = gasStart - gasleft() + p.relayBaseGas + calldataBytes * 16;
-        uint256 cap = uint256(p.relayBaseGas) + counted * p.maxRelayGasPerVote;
-        if (gasUsed > cap) gasUsed = cap;
-        uint256 cost = gasUsed * block.basefee * (BPS + p.relayMarkupBps) / BPS;
-        fromPot = cost < d.ethPot ? cost : d.ethPot;
-        address relayer = _sender();
-        if (fromPot != 0) {
-            d.ethPot -= fromPot;
-            _bank().credit(ETH, relayer, fromPot);
-        }
-        uint256 shortWei = cost - fromPot;
-        if (shortWei != 0) {
-            uint256 shortImd = shortWei * imdPerEth / 1e18;
-            relayerShortfall[subId][relayer] += shortImd;
-            d.shortfallTotal += shortImd;
+    /// @dev Cancelled by the dev wallet: every bond and unused prepayment back (disputers claim theirs with claimDisputer).
+    ///      Swarm fees already paid stay paid.
+    function _settleNeutral(uint256 subId, Facts calldata f) private {
+        IVault bank = _bank();
+        bank.credit(address(imd), f.doer, f.bond.imd - _sideSpent[subId].doer);
+        bank.credit(f.currency, f.doer, f.bond.rew);
+        Appeal storage a = _appeals[subId];
+        if (a.appellant != address(0)) {
+            _refundCaller(a, f.currency);
+            a.funds = 0;
         }
     }
 
-    /// @dev Emergency exit: every bond and unused prepayment back (disputers claim theirs with claimDisputer).
-    ///      Swarm fees already paid stay paid; relayer shortfall is unpaid (no loser).
-    function _settleNeutral(uint256 subId, Facts calldata f) private {
+    /// @dev The swarm caller's bond and unspent prepaid fee are theirs again (credit).
+    function _refundCaller(Appeal storage a, address currency) private {
         IVault bank = _bank();
-        bank.credit(address(imd), f.doer, f.bond + f.checkFunds);
-        Appeal storage a = _appeals[subId];
-        if (a.appellant != address(0)) {
-            bank.credit(address(imd), a.appellant, a.bond + a.funds);
-            a.funds = 0;
+        bank.credit(address(imd), a.appellant, a.bond.imd + a.funds);
+        bank.credit(currency, a.appellant, a.bond.rew);
+    }
+
+    /// @dev The loser's bond (disputers, or the doer; plus a losing swarm caller) and the winner's bond, in one
+    ///      currency: the loser's bond is split separately in each currency.
+    ///      `doerBond`/`disputersBond`/`callerBond` are that currency's part of `f.bond` / `d.bondTotal` /
+    ///      `a.bond`.
+    function _penaltyAndWinnerBonds(
+        bool doerWins,
+        bool callerWins,
+        bool hasCaller,
+        uint256 doerBond,
+        uint256 disputersBond,
+        uint256 callerBond
+    ) private pure returns (uint256 penalty, uint256 winnerBonds) {
+        uint256 callerLost = hasCaller && !callerWins ? callerBond : 0;
+        uint256 callerWon = hasCaller && callerWins ? callerBond : 0;
+        if (doerWins) {
+            penalty = disputersBond + callerLost;
+            winnerBonds = doerBond + callerWon;
+        } else {
+            penalty = doerBond + callerLost;
+            winnerBonds = disputersBond + callerWon;
         }
     }
 
     /// @dev Accepted or Rejected. The losing side's bonds (disputers, or the doer; plus a losing swarm caller) are
-    ///      the penalty: first a winning swarm caller gets his fee back, then the relayer shortfall (at most
-    ///      MAX_SHORTFALL_BPS of what is left), then
-    ///      - NFT tie and nobody called the swarm: tieDoerBps to the doer, the rest to the treasury;
+    ///      the penalty, split separately in each currency (IMD, the reward currency; no bond has a $YOLO add-on
+    ///      part): no separate
+    ///      refund of swarm fees.
     ///      - NFT decided right: winnerBondBps to the winning side pro rata to bonds, the rest to the correct votes;
-    ///      - NFT wrong or undecided: everything to the winning side.
-    ///      A winner who contributed to the task gets only his own bond back; his share goes to the correct
-    ///      votes (NFT right) or to the treasury. Rejected by the mandatory check (no winner): to the treasury.
-    function _settleDecided(
-        uint256 subId,
-        Facts calldata f,
-        bool doerWins,
-        bool nftRight,
-        bool tie,
-        ParamsCore memory p
-    ) private {
+    ///      - NFT wrong or undecided (also: undecided and nobody called the swarm): everything to the winning side.
+    ///      Every winner gets their share, also one who put money into the task: the doer, an appellant or a disputer
+    ///      who is its author or a contributor.
+    function _settleDecided(uint256 subId, Facts calldata f, bool doerWins, bool nftRight, ParamsCore memory p)
+        private
+    {
         Dispute storage d = _disputes[subId];
         Appeal storage a = _appeals[subId];
         Settlement storage st = _settlements[subId];
         IVault bank = _bank();
-        address imd_ = address(imd);
         st.disputersWon = !doerWins;
 
-        // a caller still recorded here got a swarm answer (silence clears him)
+        // a caller still recorded here got a swarm answer (silence clears them)
         bool hasCaller = a.appellant != address(0);
         bool callerWins = hasCaller && a.sidesDoer == doerWins;
-        uint256 callerLost = hasCaller && !callerWins ? a.bond : 0;
+        // a stranger appellant (not the doer, not the submission's one disputer)
+        // who wins the appeal gets 0.5 IMD off the top of the loser's bond first (their swarm-call fee back), the
+        // rest of the split follows as usual. Not a general fee refund (everyone else gets none).
+        bool appellantIsStranger = hasCaller && a.appellant != f.doer && a.appellant != d.disputer;
 
-        uint256 penalty; // IMD of the losing side
-        uint256 winnerBonds;
+        (uint256 penaltyImd, uint256 winnerBondsImd) =
+            _penaltyAndWinnerBonds(doerWins, callerWins, hasCaller, f.bond.imd, d.bondTotal.imd, a.bond.imd);
+        // the losing side's own swarm calls already went to the swarm out of its bond: the winner gets the rest;
+        // the bonds as posted stay the weights of the split
+        penaltyImd -= doerWins ? _sideSpent[subId].disputer : _sideSpent[subId].doer;
+        (uint256 penaltyRew, uint256 winnerBondsRew) =
+            _penaltyAndWinnerBonds(doerWins, callerWins, hasCaller, f.bond.rew, d.bondTotal.rew, a.bond.rew);
+
+        if (appellantIsStranger && callerWins && penaltyImd != 0) {
+            uint256 strangerFee = p.bondFixedImd > penaltyImd ? penaltyImd : p.bondFixedImd;
+            penaltyImd -= strangerFee;
+            bank.credit(address(imd), a.appellant, strangerFee);
+        }
+
+        uint256 toVotersImd;
+        uint256 toTreasuryImd;
+        (toVotersImd, toTreasuryImd, st.disputerReward.imd, st.disputerRewardBonds.imd) = _splitCurrency(
+            f.doer,
+            doerWins,
+            a.appellant,
+            callerWins,
+            nftRight,
+            p.winnerBondBps,
+            penaltyImd,
+            winnerBondsImd,
+            a.bond.imd,
+            d.bondTotal.imd,
+            address(imd)
+        );
+        st.voterBond.imd = toVotersImd;
+        bank.addTreasury(address(imd), toTreasuryImd);
+
+        uint256 toVotersRew;
+        uint256 toTreasuryRew;
+        (toVotersRew, toTreasuryRew, st.disputerReward.rew, st.disputerRewardBonds.rew) = _splitCurrency(
+            f.doer,
+            doerWins,
+            a.appellant,
+            callerWins,
+            nftRight,
+            p.winnerBondBps,
+            penaltyRew,
+            winnerBondsRew,
+            a.bond.rew,
+            d.bondTotal.rew,
+            f.currency
+        );
+        st.voterBond.rew = toVotersRew;
+        bank.addTreasury(f.currency, toTreasuryRew);
+
+        emit SubmissionSettled(
+            subId,
+            nftRight,
+            penaltyImd,
+            toVotersImd,
+            toTreasuryImd,
+            penaltyRew,
+            toVotersRew,
+            toTreasuryRew
+        );
+
+        // 3. direct credits: the winner's own bond back (doer, or the caller if they also won)
         if (doerWins) {
-            penalty = d.bondTotal + callerLost;
-            winnerBonds = f.bond + (callerWins ? a.bond : 0);
-        } else {
-            penalty = f.bond + callerLost;
-            winnerBonds = d.bondTotal + (callerWins ? a.bond : 0);
+            bank.credit(address(imd), f.doer, f.bond.imd - _sideSpent[subId].doer);
+            bank.credit(f.currency, f.doer, f.bond.rew);
         }
-        uint256 total = penalty;
-
-        // 0. the loser pays the winning caller's swarm fee
-        uint256 feeBack;
-        if (callerWins) {
-            feeBack = a.spent < penalty ? a.spent : penalty;
-            penalty -= feeBack;
-        }
-
-        // 1. relayer shortfall, at most MAX_SHORTFALL_BPS of the penalty: the rest goes to the winners and the
-        //    correct votes whatever the relayers metered (swarm audit #3)
-        uint256 shortCap = penalty * MAX_SHORTFALL_BPS / BPS;
-        uint256 shortPay = d.shortfallTotal < shortCap ? d.shortfallTotal : shortCap;
-        st.shortfallPay = shortPay;
-        st.shortfallLeft = d.shortfallTotal;
-        penalty -= shortPay;
-
-        // 2. split
-        uint256 toVoters;
-        uint256 toTreasury;
-        uint256 redirect; // contributor-winner shares
-        if (tie) {
-            uint256 toDoer = penalty * p.tieDoerBps / BPS;
-            if (f.doerIsContributor || _isContributor(f.taskId, f.doer)) redirect = toDoer;
-            else bank.credit(imd_, f.doer, toDoer);
-            toTreasury = penalty - toDoer;
-        } else {
-            if (nftRight) toVoters = penalty - penalty * p.winnerBondBps / BPS;
-            uint256 winnerShare = penalty - toVoters;
-            if (winnerBonds == 0) toTreasury = winnerShare; // rejected by the mandatory check
-            else if (winnerShare != 0) redirect = _payWinners(subId, f, doerWins, callerWins, winnerShare, winnerBonds);
-        }
-        if (nftRight) toVoters += redirect;
-        else toTreasury += redirect;
-        st.voterImd = toVoters;
-        bank.addTreasury(imd_, toTreasury);
-        emit SubmissionSettled(subId, nftRight, total, penalty - toVoters - toTreasury, toVoters, toTreasury);
-
-        // 3. direct credits: the doer's bond if he won (and any unused check prepayment), the caller
-        bank.credit(imd_, f.doer, (doerWins ? f.bond : 0) + f.checkFunds);
         if (hasCaller) {
-            uint256 back = a.funds + (callerWins ? a.bond + feeBack : 0);
+            bank.credit(address(imd), a.appellant, a.funds + (callerWins ? a.bond.imd : 0));
             a.funds = 0;
-            bank.credit(imd_, a.appellant, back);
+            if (callerWins) {
+                bank.credit(f.currency, a.appellant, a.bond.rew);
+            }
         }
     }
 
-    /// @dev Accepted: R - fee to the doer, in the reward currency. The fee goes to the treasury, except that after
-    ///      a dispute the NFT decided right, nftFeeBps of R go to the correct votes. (The vault takes R out of
-    ///      the task's pot when it closes the submission.)
+    /// @dev Accepted: R - 10% to the doer, in the reward currency. Of the 10% fee: nftFeeBps (5%)
+    ///      to the correct votes after a dispute the NFT decided right; the other 5% is the stakers' part. A doer
+    ///      whose submission fixed a stake bonus (`Facts.stakeBps`, 4% x min(1, power / the author's reward in $YOLO), CaseDesk) and
+    ///      whose lock still runs (YoloLockHub.stakePower) gets that share of R from that part, even if they put money
+    ///      into this task themselves, the rest of it is
+    ///      split half to the burn, half to the treasury, and the NFT 5% nobody earned is
+    ///      burned. Without a stake both 5% go to the treasury. $YOLO the treasury gets goes to the
+    ///      BuybackBurner. (The vault takes R out of the pot on closing.)
     function _payReward(uint256 subId, Facts calldata f, bool nftRight, ParamsCore memory p) private {
         uint256 r = f.reward;
         uint256 fee = r * p.feeBps / BPS;
-        uint256 toVoters = nftRight ? r * p.nftFeeBps / BPS : 0;
-        _settlements[subId].voterFee = toVoters;
+        uint256 nftPart = r * p.nftFeeBps / BPS;
+        uint256 toVoters = nftRight ? nftPart : 0;
+        Settlement storage st = _settlements[subId];
+        st.voterFee = toVoters;
         IVault bank = _bank();
-        bank.addTreasury(f.currency, fee - toVoters);
-        bank.credit(f.currency, f.doer, r - fee);
+        uint256 toTreasury = fee - toVoters;
+        uint256 bonus;
+        uint256 bps = f.stakeBps;
+        if (bps != 0 && _lockRuns(f)) {
+            st.stakeBps = bps;
+            uint256 stakers = fee - nftPart;
+            bonus = r * bps / BPS;
+            if (bonus > stakers) bonus = stakers;
+            uint256 half = (stakers - bonus) / 2;
+            toTreasury = stakers - bonus - half;
+            bank.burn(f.currency, half + nftPart - toVoters);
+        }
+        bank.addTreasury(f.currency, toTreasury);
+        bank.credit(f.currency, f.doer, r - fee + bonus);
     }
 
-    /// @dev Splits the winners' share pro rata to bonds. The doer and the caller are credited directly;
-    ///      disputers claim lazily from a bucket. Returns the part of contributors (redirected by the caller).
-    function _payWinners(
-        uint256 subId,
-        Facts calldata f,
+    /// @dev The lock behind the bonus still runs (never withdrawn since the submission). Never blocks a payout: a
+    ///      hub that reverts, has no code or answers anything but one word counts as no stake.
+    function _lockRuns(Facts calldata f) private view returns (bool) {
+        (bool ok, bytes memory ret) =
+            address(doerStake).staticcall(abi.encodeCall(IDoerStake.stakePower, (f.doer, f.since)));
+        return ok && ret.length == 32 && abi.decode(ret, (uint256)) != 0;
+    }
+
+    /// @dev One currency's loser-penalty split: NFT share (if `nftRight`) carved out by the caller first, then the
+    ///      doer (if they won, direct credit) or the disputers, bucketed for `claimDisputer`'s pro-rata share. Every
+    ///      winner gets their share, a contributor to the task included.
+    function _splitCurrency(
+        address doer,
         bool doerWins,
+        address appellant,
         bool callerWins,
-        uint256 winnerShare,
-        uint256 winnerBonds
-    ) private returns (uint256 redirect) {
-        Dispute storage d = _disputes[subId];
-        Appeal storage a = _appeals[subId];
-        Settlement storage st = _settlements[subId];
-        address imd_ = address(imd);
-        uint256 appPart = callerWins ? winnerShare * a.bond / winnerBonds : 0;
-        if (appPart != 0) {
-            if (a.contributor || _isContributor(f.taskId, a.appellant)) redirect += appPart;
-            else _bank().credit(imd_, a.appellant, appPart);
-        }
+        bool nftRight,
+        uint16 winnerBondBps,
+        uint256 penalty,
+        uint256 winnerBonds,
+        uint256 callerBond,
+        uint256 disputersBondTotal,
+        address token
+    ) private returns (uint256 toVoters, uint256 toTreasury, uint256 disputerReward, uint256 disputerRewardBonds) {
+        if (penalty == 0) return (0, 0, 0, 0);
+        toVoters = nftRight ? penalty - penalty * winnerBondBps / BPS : 0;
+        uint256 winnerShare = penalty - toVoters;
+        if (winnerShare == 0) return (toVoters, 0, 0, 0);
+        // the winning side has no bond in this currency (a tiny base: 1% of it rounded to 0): nobody to share the
+        // dust with pro rata, so it goes to the treasury instead of staying stuck in the vault
+        if (winnerBonds == 0) return (toVoters, winnerShare, 0, 0);
+        uint256 appPart = callerWins ? winnerShare * callerBond / winnerBonds : 0;
+        if (appPart != 0) _bank().credit(token, appellant, appPart);
         uint256 rest = winnerShare - appPart;
         if (doerWins) {
-            if (f.doerIsContributor || _isContributor(f.taskId, f.doer)) redirect += rest;
-            else _bank().credit(imd_, f.doer, rest);
-        } else if (rest != 0) {
-            uint256 toContributors = rest * d.contributorBondTotal / d.bondTotal;
-            redirect += toContributors;
-            st.disputerReward = rest - toContributors;
-            st.disputerRewardBonds = d.bondTotal - d.contributorBondTotal;
+            if (rest != 0) _bank().credit(token, doer, rest);
+        } else if (rest != 0 && disputersBondTotal != 0) {
+            // every disputer gets their pro-rata share, author/contributor included; claimDisputer pays it lazily
+            // per claimant
+            disputerReward = rest;
+            disputerRewardBonds = disputersBondTotal;
         }
-    }
-
-    /// @dev Contributor status is re-checked at settlement: topping up after submitting / appealing does not
-    ///      escape the "a contributor who wins gets only his own bond" rule.
-    function _isContributor(uint256 taskId, address who) private view returns (bool) {
-        return _bank().isContributor(taskId, who);
     }
 }

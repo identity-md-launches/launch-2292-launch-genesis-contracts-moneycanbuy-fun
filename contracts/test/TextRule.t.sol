@@ -12,46 +12,19 @@ contract TextRuleProbe {
 }
 
 /// @dev The word-at-a-time validText (32 ASCII bytes per step) against the plain byte-by-byte rule it replaced:
-///      same answer on any input, so the swarm JSON can never get a quote, backslash, control byte or bad UTF-8.
+/// same answer on any input, so the swarm JSON can never get a quote, backslash, control byte or non-ASCII
+/// byte (English only, printable ASCII 0x20..0x7e).
 contract TextRuleTest is Test {
     TextRuleProbe internal probe = new TextRuleProbe();
 
-    /// @dev The rule byte by byte: 1..maxLen bytes of well-formed UTF-8, no quote, backslash, control or DEL.
+    /// @dev The rule byte by byte: 1..maxLen bytes of printable ASCII 0x20..0x7e, no quote, backslash or DEL; any
+    /// byte >= 0x80 (Cyrillic, CJK, emoji, any other UTF-8) is rejected outright.
     function _reference(bytes memory b, uint256 maxLen) internal pure returns (bool) {
         uint256 len = b.length;
         if (len == 0 || len > maxLen) return false;
-        uint256 i;
-        while (i < len) {
+        for (uint256 i; i < len; ++i) {
             uint8 c = uint8(b[i]);
-            if (c < 0x80) {
-                if (c < 0x20 || c == 0x22 || c == 0x5c || c == 0x7f) return false;
-                ++i;
-                continue;
-            }
-            uint256 n;
-            uint8 lo = 0x80;
-            uint8 hi = 0xbf;
-            if (c >= 0xc2 && c <= 0xdf) {
-                n = 1;
-            } else if (c >= 0xe0 && c <= 0xef) {
-                n = 2;
-                if (c == 0xe0) lo = 0xa0;
-                if (c == 0xed) hi = 0x9f;
-            } else if (c >= 0xf0 && c <= 0xf4) {
-                n = 3;
-                if (c == 0xf0) lo = 0x90;
-                if (c == 0xf4) hi = 0x8f;
-            } else {
-                return false;
-            }
-            if (i + n >= len) return false;
-            uint8 c1 = uint8(b[i + 1]);
-            if (c1 < lo || c1 > hi) return false;
-            for (uint256 k = 2; k <= n; ++k) {
-                uint8 ck = uint8(b[i + k]);
-                if (ck < 0x80 || ck > 0xbf) return false;
-            }
-            i += n + 1;
+            if (c < 0x20 || c >= 0x7f || c == 0x22 || c == 0x5c) return false;
         }
         return true;
     }
@@ -88,7 +61,7 @@ contract TextRuleTest is Test {
             uint256 r = uint256(keccak256(abi.encode(seed, i)));
             uint256 kind = r % 5;
             if (kind == 0) b = bytes.concat(b, "the quick brown fox jumps over the lazy dog");
-            else if (kind == 1) b = bytes.concat(b, unicode"Ωμέγα");
+            else if (kind == 1) b = bytes.concat(b, "\u00e9\u00e9\u00e9\u00e9\u00e9");
             else if (kind == 2) b = bytes.concat(b, unicode"👀");
             else if (kind == 3) b = bytes.concat(b, unicode"€");
             else b = bytes.concat(b, bytes1(uint8(r >> 8)));
@@ -112,10 +85,14 @@ contract TextRuleTest is Test {
         _same(bytes.concat(bytes(_repeat("a", 63)), hex"1f"));
         _same(bytes.concat(bytes(_repeat("a", 30)), hex"e0a080")); // overlong
         _same(bytes.concat(bytes(_repeat("a", 30)), hex"eda080")); // surrogate
-        _same(bytes.concat(bytes(_repeat("a", 30)), unicode"Ωμέγα"));
+        _same(bytes.concat(bytes(_repeat("a", 30)), "\u00e9\u00e9\u00e9\u00e9\u00e9"));
         _same("");
         assertTrue(probe.check(_repeat("a", 64), 512));
         assertFalse(probe.check(string(bytes.concat(bytes(_repeat("a", 64)), '"')), 512));
+        // only English - single quotes are fine, accented Latin and emoji revert
+        assertTrue(probe.check("'$IMD' in single quotes", 512));
+        assertFalse(probe.check("\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9", 512));
+        assertFalse(probe.check(unicode"emoji 👀", 512));
     }
 
     function _repeat(bytes1 ch, uint256 n) internal pure returns (string memory) {

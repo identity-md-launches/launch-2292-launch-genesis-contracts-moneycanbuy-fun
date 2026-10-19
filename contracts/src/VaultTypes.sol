@@ -7,55 +7,64 @@ pragma solidity ^0.8.28;
 
 address constant ETH = address(0);
 uint256 constant BPS = 10_000;
-uint8 constant SWARM_KIND_CHECK = 1; // mandatory check of a large submission
+// kind 1 is reserved
 uint8 constant SWARM_KIND_ESCALATION = 2; // NFT vote without decision, somebody paid to call the swarm
 uint8 constant SWARM_KIND_APPEAL = 3; // appeal of an NFT decision
-/// @dev Task categories: 0 social, 1 stream, 2 irl, 3 onchain, 4 dev, 5 art, 6 other (the site's labels and fallback
-///      covers). Set once at creation.
-uint8 constant CATEGORY_COUNT = 7;
+/// @dev Task categories: 0 trash, 1 crazy, 2 action, 3 sport, 4 food, 5 prank, 6 shill, 7 onchain, 8 other (the site's
+///      labels and fallback covers). Set once at creation.
+uint8 constant CATEGORY_COUNT = 9;
 /// @dev Longest cover link: `ipfs://<CIDv1>` is 66 bytes, the rest is room for a path or an https fallback.
 uint256 constant MAX_COVER_BYTES = 160;
-/// @dev Task title: shown on the site, never sent to the swarm (the condition says what to do and how to prove it).
-uint256 constant MAX_TITLE_BYTES = 80;
+/// @dev Task title: shown on the site, never sent to the swarm (the rules say what to do and how to prove it).
+///      Same limit as DareTrophy.MAX_TITLE_BYTES (the doer resupplies the title at mint): a task created past 64
+///      bytes could never mint a trophy (contract = 64, as on the site).
+uint256 constant MAX_TITLE_BYTES = 64;
 /// @dev Proof types: what a submission's proofUri must be (TextLib.checkProof). Set once at creation.
 uint8 constant PROOF_X_POST = 0; // https://x.com/<user>/status/<id> (or twitter.com)
-uint8 constant PROOF_VIDEO = 1; // https link on youtube.com, youtu.be, kick.com, twitch.tv, or an X post
+uint8 constant PROOF_VIDEO = 1; // https link on youtube.com or youtu.be, or an X post
 uint8 constant PROOF_ONCHAIN_TX = 2; // 0x + 64 hex: an Ethereum mainnet transaction hash
-uint8 constant PROOF_LINK = 3; // any https link
+uint8 constant PROOF_LINK = 3; // https link on a host of the allowlist (TextLib.checkHost)
 uint8 constant PROOF_TYPE_COUNT = 4;
-/// @dev Doer's note on a submission: same text rule as the condition (TextLib.validText), short. Stored because the
-///      swarm question is built on chain in whatever transaction asks it; 200 bytes = at most 8 storage slots.
-uint256 constant MAX_NOTE_BYTES = 200;
+/// @dev Doer's note on a submission: optional, same text rule as the task rules (TextLib.validText: printable
+///      ASCII only), same ceiling as maxTextBytes (ParamsBounds.validate, 32..512).
+uint256 constant MAX_NOTE_BYTES = 512;
+/// @dev Evidence.screenshotUrl: `https://` link on a host of the allowlist (TextLib.checkHost),
+///      bounded so one screenshot link cannot blow up the swarm question (TextLib.checkScreenshotUrl).
+uint256 constant MAX_SCREENSHOT_URL_BYTES = 300;
+/// @dev Longest proof or screenshot link the host allowlist accepts (TextLib.checkHost).
+uint256 constant MAX_LINK_BYTES = 512;
 /// @dev onOracleResult(bytes32,(bytes32,uint256,bytes32,uint8,bytes,uint256,uint64,uint64,bytes32,bytes32,
 ///      uint16,uint16,uint16,uint64,uint64),bytes) - matches the IMD docs and a delivered mainnet callback.
 bytes4 constant CALLBACK_SELECTOR = 0x510379c7;
 /// @dev A swarm answer signed within the swarm timeout counts if it reaches the vault at most this long after the
-///      timeout; silence is declared only after it, so the outcome never depends on who pokes when (swarm audit
-///      #7).
+///      timeout; silence is declared only after it, so the outcome never depends on who pokes when.
 uint256 constant SWARM_DELIVERY_GRACE = 1 hours;
-/// @dev A contributor's active share leaves an open task only after this public notice (`announceWithdraw`) ...
-uint256 constant WITHDRAW_NOTICE = 1 hours;
-/// @dev ... and the notice holds this long after that (then it must be renewed), as YoloSweetener's.
-uint256 constant WITHDRAW_NOTICE_VALID = 1 days;
+/// @dev At most this many swarm questions per submission (appeals and calls after silence together, and appeals void
+///      because the Intake failed or its price rose). After the last one stays silent or is void the
+///      submission ends as if nobody had called the swarm.
+uint256 constant MAX_SWARM_CALLS = 3;
+/// @dev The doer stake bonus: 4% of the reward x min(1, lock power / reward in
+///      $YOLO), from any power, no threshold.
+uint256 constant MAX_STAKE_BONUS_BPS = 400;
 
 // ====================================================================== enums
 
 enum TaskStatus {
     None,
     Open,
-    Completed, // a submission was accepted
-    Expired, // deadline passed with no submission in flight: everyone takes back his share
-    Unwound // emergency exit: everyone takes back what he put in
+    Completed, // a submission was accepted (Task.activeSub keeps its id)
+    Expired, // deadline passed with no submission in flight: everyone takes back their share
+    Unwound // cancelled by the dev wallet (TaskVault.cancelTask): everyone takes back what they put in
 }
 
 enum Phase {
     None,
     Queued, // waiting behind the active submission
-    Review, // active; dispute window (large tasks: after the mandatory swarm check answered "yes" or was silent)
+    Review, // active; dispute window
     Voting, // at least one dispute: NFT vote running
     NoDecision, // NFT did not decide: optimistic window, anyone may call the swarm paying fee + bond
     Decided, // NFT decision stands: appeal window, anyone may appeal paying fee + bond
-    Appealed, // appeal filed (fee prepaid): opponent reply window, then the question is asked lazily
+    Appealed, // appeal filed (fee prepaid): the question is due at once, asked lazily (askAppealSwarm)
     Asked, // the swarm was asked for a caller (appellant or NoDecision caller); answer or silence pending
     Final, // settled, see Outcome
     Void // queued submission of a task that was completed / unwound: bond refunded
@@ -65,19 +74,13 @@ enum Outcome {
     None,
     Accepted,
     Rejected,
-    Unwound // emergency exit: everyone takes back what he put in
+    Unwound // cancelled by the dev wallet (TaskVault.cancelTask): everyone takes back what they put in
 }
 
 enum Verdict {
     None,
     Accept,
     Reject
-}
-
-enum CheckState {
-    None, // not a large task (or the check was silent: treated as no check)
-    Requested,
-    Passed
 }
 
 enum SwarmStatus {
@@ -88,18 +91,31 @@ enum SwarmStatus {
 
 // ====================================================================== structs
 
+/// @notice A bond or penalty split by currency: `imd` is the fixed IMD part
+///         (a `ParamsCore.bondFixedImd` parameter, never doubled; a side's own swarm call draws only from it, so it
+///         is kept at least one swarm fee), `rew` is doerBondBps/disputeBondBps percent of the author's own reward
+///         in the task's currency. Top-ups of other contributors and the $YOLO add-on are not part of any bond.
+///         No oracle, no USD
+///         conversion: every part is paid and penalized in its own currency.
+struct Bond {
+    uint256 imd;
+    uint256 rew;
+}
+
 /// @notice How the payer provides IMD. `amountIn == 0`: mode B, IMD is pulled with transferFrom.
 ///         Otherwise mode A: `amountIn` of `tokenIn` (ETH or USDC) is swapped through the swap adapter with the
 ///         user's `minImdOut` and `deadline`; surplus IMD is returned in the same transaction.
-/// @notice What a doer may attach to his proof link, both optional, both shown to the swarm and to NFT voters as his
-///         argument (the proof link itself decides). `screenshot` is the sha2-256 digest of the IPFS block of a picture,
-///         0 = none: CIDv1 `ipfs://b…` with codec raw (`screenshotRaw`, a file of one 256 KiB chunk) or dag-pb (the
-///         UnixFS root of a chunked file), byte for byte what `ipfs add --cid-version=1` gives.
-///         A digest instead of a 66-byte link: one storage slot instead of four, and it can only name an IPFS file.
-///         `note`: 0..MAX_NOTE_BYTES bytes, the condition's text rule.
+/// @notice What a doer may attach to their proof link, both shown to the swarm and to NFT voters as their
+///         argument (the proof link itself decides). `screenshotUrl`: an `https://` link to the picture or clip on
+///         a host of the allowlist (TextLib.checkHost: x.com, twitter.com, pbs.twimg.com, youtube.com, youtu.be,
+///         tiktok.com, instagram.com, drive.google.com, lh3.googleusercontent.com, photos.google.com, imgur.com,
+///         i.imgur.com, t.me, ibb.co, i.ibb.co, reddit.com, i.redd.it, dropbox.com, arweave.net, etherscan.io,
+///         sepolia.etherscan.io, github.com, kick.com, twitch.tv, clips.twitch.tv); required for x_post and video
+///         (EvidenceRequired), optional otherwise. Empty = none;
+///         otherwise no spaces, at most MAX_SCREENSHOT_URL_BYTES (TextLib.checkScreenshotUrl).
+///         `note`: 0..MAX_NOTE_BYTES bytes, the text rule of the task rules.
 struct Evidence {
-    bytes32 screenshot;
-    bool screenshotRaw;
+    string screenshotUrl;
     string note;
 }
 
@@ -111,29 +127,58 @@ struct ImdPay {
     bytes route;
 }
 
+/// @notice The rules of a task: three texts, each 1..maxTextBytes bytes (TextLib.validText), each sent to the swarm as
+///         its own definition (Intake: definition values <= 512), so a task may carry up to 3 x maxTextBytes of rules.
+///         `task` (definition "task"): TASK, what to do, every step and every text needed (SPEECH and the like).
+///         `proof` (definition "task_proof"): WINDOW, WHO, PROOF, SOURCE: when, who hands in, what the proof shows,
+///         where it lives, where the DOER CODE is. `noIf` (definition "task_no"): "NO if: ...", when the answer is no.
+///         Stored at creation, never change.
+struct TaskRules {
+    string task;
+    string proof;
+    string noIf;
+}
+
+/// @dev Whoever asks the swarm (DisputeDesk.callSwarm, CaseDesk.askAppealSwarm)
+///      resupplies in calldata everything the question needs that storage holds only as a hash - the task's
+///      three rule texts (Task.rulesHash) and the filed disputer's reason + proof link (DisputerInfo.reasonHash).
+///      Checked against both hashes, then handed to SwarmQuestion.build(); never written to storage.
+struct RuleTexts {
+    string task;
+    string taskProof;
+    string taskNo;
+    string disputeReason;
+    string disputerProofUri;
+}
+
 struct Task {
     address author;
-    uint64 deadline; // 0 = no deadline
+    uint64 deadline; // always set, never changes (no task without a deadline)
     uint32 paramsVersion;
     TaskStatus status;
     address currency; // ETH, USDC, IMD or $YOLO
-    uint64 busyEpoch; // +1 each time a busy period ends without acceptance (pending top-ups join the pot)
+    uint64 busyEpoch; // reserved, always 0
     uint8 category; // see CATEGORY_COUNT; packed into the slot written at creation anyway (no extra SSTORE)
     uint8 proofType; // see PROOF_TYPE_COUNT; same slot
-    uint64 activeSub;
-    uint64 queueHead;
-    uint64 queueTail;
+    uint64 activeSub; // the submission under judging; on a Completed task: the accepted one
+    uint32 queueHead;
+    uint32 queueTail;
     uint32 rejectedCount;
-    uint256 pot; // reward in play = sum of active shares; constant while any submission is active
-    uint256 pending; // top-ups made while a submission was active
-    string condition; // what to do and how to prove it: stored, sent to the swarm as TASK
+    uint64 createdAt; // YOLO Predict weighs positions over [createdAt, deadline]
+    uint256 pot; // reward in play = sum of active shares; a top-up joins it at once, also during a check
+    uint256 pending; // reserved, always 0
+    // keccak256(abi.encode(task, proof, noIf)) instead of the 3 strings (up to 1 536 B
+    // = ~48 slots) - the texts live only in createTask's calldata and the TaskCreated event; whoever later needs
+    // them to build the swarm question (DisputeDesk.callSwarm, CaseDesk.askAppealSwarm) resupplies them in that
+    // same call and the hash is checked against this, else RulesMismatch.
+    bytes32 rulesHash;
 }
 
 struct Contribution {
     uint128 active;
-    uint128 pending;
-    uint64 pendingEpoch; // busyEpoch at the time of the pending top-up
-    bool ever; // ever contributed to this task: as a winner he gets only his own bond back
+    uint128 pending; // reserved, always 0
+    uint64 pendingEpoch; // reserved, always 0
+    bool ever; // ever contributed to this task: as a winner they get only their own bond back
 }
 
 struct Submission {
@@ -141,81 +186,90 @@ struct Submission {
     address doer;
     Phase phase;
     Outcome outcome;
-    CheckState check;
     Verdict nftDecision;
-    bool large;
-    bool doerIsContributor;
-    bool screenshotRaw; // packed into a slot written at submission anyway
-    uint32 asks; // swarm questions asked for this submission (question nonce)
+    uint32 asks; // swarm questions asked or void for this submission (question nonce; at most MAX_SWARM_CALLS)
+    uint16 stakeBps; // the doer stake bonus fixed at submission, 0..400 bps of R
+    uint64 submittedAt; // the lock behind stakeBps must still run at the payout (YoloLockHub.stakePower)
     uint64 activatedAt;
-    uint64 windowEnd; // end of the dispute window (0 while a mandatory check is pending)
+    uint64 windowEnd; // end of the dispute window
     uint64 voteEnd;
-    uint64 replyEnd;
     uint64 decidedAt; // time of the NFT decision
     uint64 callFrom; // start of the current window to call the swarm (NoDecision / Decided)
-    uint256 reward; // R, fixed at submission
-    uint256 rewardImd; // R in IMD at submission (bond base; IMD tasks: = R)
-    uint256 imdPerEth; // IMD per 1e18 wei at submission (relayer shortfall conversion)
-    uint256 bond; // doer bond, IMD, all of it penalty
-    uint256 checkFunds; // prepaid mandatory-check fee not spent yet (back to the doer if never spent)
+    uint64 appealedAt; // when markAppealed ran; stepDeadline of Phase.Appealed
+        // (the question is due at once)
+    // R and the author's part of it share one slot (both < 2^128: every share of a pot is a uint128)
+    uint128 reward; // R, fixed at submission (task currency): what the doer is paid
+    uint128 base; // the author's own share of R at submission: the base of every bond's "rew" part
+    uint256 addon; // $YOLO add-on, fixed at submission (its voter pool on acceptance; not part of any bond)
+    Bond bond; // doer bond: imd fixed + rew% of the author's base (reward currency), never doubled
     bytes32 request; // current swarm request (Intake id)
     string proofUri;
-    string doerReply;
-    bytes32 screenshot; // Evidence.screenshot, 0 = none
-    string doerNote; // Evidence.note, empty = none
+    string screenshotUrl; // Evidence.screenshotUrl, empty = none
+    string doerNote; // Evidence.note, empty = none: their "why honest" text, written at submission
+        // (no separate "doer answers the dispute" step)
 }
 
 struct Dispute {
-    uint256 bondTotal;
-    uint256 contributorBondTotal; // bonds of disputers who contributed to the task
-    uint256 feeTotal; // ETH gas fees paid by disputers
-    uint256 ethPot; // ETH left in the dispute pot (fees minus relayer reimbursements)
-    uint256 shortfallTotal; // IMD owed to relayers from the loser penalty
+    Bond bondTotal;
+    // uint32: votes are bounded today by the IMD identity NFT's MAX_SUPPLY (2,000 NFTs, 1 NFT = 1 vote, each id once
+    // per dispute), far under uint16's 65,535 — but that bound lives in the NFT contract, not here, and SafeCast reverts
+    // rather than wraps, so an NFT collection or delegation scheme that crosses 65,535 would permanently
+    // stick every vote on a dispute with uint16; uint32 costs one storage slot and leaves headroom many orders
+    // above the NFT supply.
     uint32 votesAccept;
     uint32 votesReject;
     uint32 walletsAccept;
     uint32 walletsReject;
-    address[] disputers;
+    address disputer; // one dispute, one disputer: address(0) = nobody yet
+    uint32 openBlock; // the block of the dispute (no snapshot: an NFT votes with its holder at the vote)
 }
 
 struct DisputerInfo {
-    uint256 bond;
-    uint256 fee;
-    bool contributor;
+    Bond bond;
     bool claimed;
-    string reason;
+    // keccak256(abi.encode(reason, proofUri)) instead of the raw reason string;
+    // proofUri is the link to the disputer's own proof that the submission fails the rule, same text
+    // rule and byte cap as reason. Both texts live in dispute()'s calldata and the Disputed event; whoever later
+    // calls the swarm (DisputeDesk.callSwarm, CaseDesk.askAppealSwarm) resupplies them, checked against this hash.
+    bytes32 reasonHash;
 }
 
 /// @notice The current swarm caller of a submission: an appellant against the NFT decision, or whoever called the
-///         swarm when the NFT did not decide (he picks a side). He pays the swarm fee and a dispute bond. At most one
-///         at a time; cleared when the swarm stays silent (his bond is credited back, his fee is lost).
+///         swarm when the NFT did not decide (they pick a side). They pay the swarm fee and a dispute bond. At most one
+///         at a time; cleared when the swarm stays silent (their bond is credited back, their fee is lost).
 struct Appeal {
     address appellant;
     bool sidesDoer; // true: stands for acceptance (appeals a "reject" decision)
-    bool contributor;
-    bool replied;
-    uint64 replyEnd; // 0 for a NoDecision call (asked at once)
-    uint256 bond;
+    Bond bond;
     uint256 funds; // prepaid swarm fee not spent yet
     uint256 spent; // paid to the Intake for his question (reimbursed from the loser if he wins)
-    string reason;
-    string reply;
+    // no reason text: an appeal/call of the swarm is a button,
+    // not a text field. The panel still sees the original dispute reason (DisputerInfo), not a second one.
+    // a side of the dispute (the doer, or the disputer against the doer) calling the swarm for itself: no second
+    // bond (`bond` stays 0), the fee comes out of its dispute bond first;
+    // the part of the prepaid fee its bond covers, `funds` is what it paid on top
+    uint256 fromBond;
+}
+
+/// @notice IMD the sides' own dispute bonds paid to the swarm for their calls: taken off what
+///         the side gets back or loses at settlement.
+struct SideSpent {
+    uint128 doer;
+    uint128 disputer;
 }
 
 /// @notice Buckets of a final submission paid out by lazy per-claimant claims. Every bucket is split
 ///         remaining/remaining, so the last claimant takes the exact rest and no dust is left.
 struct Settlement {
-    bool neutral; // emergency exit: every bond back, no penalty, no voter reward, relayer shortfall unpaid
+    bool neutral; // cancelled by the dev wallet: every bond back, no penalty, no voter reward
     bool disputersWon; // the disputers are on the winning side (Rejected)
-    uint256 disputerReward; // IMD for winning non-contributor disputers, pro rata to bonds
-    uint256 disputerRewardBonds; // their bonds not yet claimed
-    uint256 ethLeft; // dispute pot leftover for disputers, pro rata to fees
-    uint256 ethFeesLeft;
-    uint256 voterImd; // IMD (loser bond share) for NFT votes on the final side, when the NFT decided right
-    uint256 voterFee; // reward currency (fee share) for the same votes
+    uint256 stakeBps; // accepted with the doer stake bonus: its share of R in bps (0..400), YoloSweetener pays the same share
+    Bond disputerReward; // for winning disputers (any of them: author/contributor included),
+    // pro rata to bonds, per currency
+    Bond disputerRewardBonds; // their bonds not yet claimed, per currency
+    Bond voterBond; // loser bond share for NFT votes on the final side, when the NFT decided right
+    uint256 voterFee; // reward currency (10% reward fee share) for the same votes
     uint256 voterVotesLeft; // correct votes not yet claimed
-    uint256 shortfallPay; // IMD for relayers
-    uint256 shortfallLeft;
 }
 
 struct SwarmRequest {
@@ -240,46 +294,85 @@ event TaskCreated(
     uint256 amount,
     uint64 deadline,
     string title,
-    string condition,
+    TaskRules rules,
     uint8 category,
     uint8 proofType,
     string cover
 );
-event ToppedUp(uint256 indexed taskId, address indexed contributor, uint256 amount, bool pending);
+/// @dev `duringCheck`: made while a submission was being checked; it joined the reward in play all the same.
+event ToppedUp(uint256 indexed taskId, address indexed contributor, uint256 amount, bool duringCheck);
 event ContributionWithdrawn(uint256 indexed taskId, address indexed contributor, uint256 amount);
-/// @dev `contributor` may take his active share `amount` of an open task from `leavingAt` (TaskVault.announceWithdraw).
-event WithdrawAnnounced(uint256 indexed taskId, address indexed contributor, uint256 amount, uint64 leavingAt);
 event TaskStatusChanged(uint256 indexed taskId, TaskStatus status);
+/// @notice The dev wallet cancelled an open task: status Unwound, everyone takes back their own.
+event TaskCancelled(uint256 indexed taskId, address indexed by);
+event SweetenerBound(address indexed sweetener);
+/// @dev `proofUri`: always set, not indexed so Etherscan decodes it from this log —
+///      the one event every submission emits, so this is where the site/a reader finds the proof link without
+///      depending on the optional `EvidenceAttached`.
 event Submitted(
-    uint256 indexed subId, uint256 indexed taskId, address indexed doer, uint256 reward, uint256 bond, bool queued
+    uint256 indexed subId,
+    uint256 indexed taskId,
+    address indexed doer,
+    uint256 reward,
+    uint256 bondImd,
+    uint256 bondRew,
+    bool queued,
+    string proofUri
 );
-/// @dev Emitted right after `Submitted` when the doer attached a screenshot or a note (Evidence).
-event EvidenceAttached(uint256 indexed subId, bytes32 screenshot, bool screenshotRaw, string note);
-event Activated(uint256 indexed subId, uint64 windowEnd, bool checkRequired);
-event CheckPassed(uint256 indexed subId, uint64 windowEnd); // also after a silent check (window from silence)
-event Disputed(uint256 indexed subId, address indexed disputer, uint256 bond, uint256 fee, string reason);
+/// @dev Emitted right after `Submitted` when the doer attached a screenshot link or a note (Evidence).
+event EvidenceAttached(uint256 indexed subId, string screenshotUrl, string note);
+event Activated(uint256 indexed subId, uint64 windowEnd);
+/// @dev `disputerProofUri`: the disputer's own proof that the submission
+///      fails the rule; empty when the disputer gave no link (optional). Both strings are not indexed so Etherscan decodes them on a verified contract, straight
+///      from this log, with no site and no indexer.
+event Disputed(
+    uint256 indexed subId,
+    address indexed disputer,
+    uint256 bondImd,
+    uint256 bondRew,
+    string reason,
+    string disputerProofUri
+);
 event DoerReplied(uint256 indexed subId, string reply);
-event VotesSubmitted(uint256 indexed subId, address indexed relayer, uint256 accept, uint256 reject, uint256 paidWei);
 event NftDecided(uint256 indexed subId, Verdict decision, bool instant);
 event NoNftDecision(uint256 indexed subId);
-event Appealed(uint256 indexed subId, address indexed appellant, uint256 bond, uint256 prepaid, string reason);
+/// @dev No `reason`: appeal is a button.
+event Appealed(
+    uint256 indexed subId, address indexed appellant, uint256 bondImd, uint256 bondRew, uint256 prepaid
+);
 event AppealReplied(uint256 indexed subId, address indexed by, string reply);
 event SwarmAsked(uint256 indexed subId, bytes32 indexed requestId, uint8 kind, uint256 paid, bytes32 questionHash);
-event SwarmCalled(uint256 indexed subId, address indexed caller, bool sidesDoer, uint256 bond, uint256 fee);
+event SwarmCalled(
+    uint256 indexed subId,
+    address indexed caller,
+    bool sidesDoer,
+    uint256 bondImd,
+    uint256 bondRew,
+    uint256 fee
+);
 event SwarmSilent(uint256 indexed subId, bytes32 indexed requestId, uint64 windowFrom);
 event AppealVoided(uint256 indexed subId, uint256 price);
 event SwarmAnswered(bytes32 indexed requestId, uint256 indexed subId, bool answer, uint64 answerTime, bool viaCallback);
 event AttestationIgnored(bytes32 indexed requestId, uint8 reason);
 event SubmissionFinal(uint256 indexed subId, uint256 indexed taskId, Outcome outcome);
-event DisputerClaimed(uint256 indexed subId, address indexed disputer, uint256 imd, uint256 eth);
-event VoterRewardClaimed(uint256 indexed subId, address indexed payTo, uint256 votes, uint256 imd, uint256 fee);
-event RelayerShortfallClaimed(uint256 indexed subId, address indexed relayer, uint256 imd);
-event VoidSubmissionClaimed(uint256 indexed subId, address indexed doer, uint256 imd);
+event DisputerClaimed(uint256 indexed subId, address indexed disputer, uint256 imd, uint256 rew);
+event VoterRewardClaimed(uint256 indexed subId, address indexed payTo, uint256 votes, uint256 imd, uint256 rew, uint256 fee);
+event VoidSubmissionClaimed(uint256 indexed subId, address indexed doer, uint256 imd, uint256 rew);
 event Credited(address indexed token, address indexed account, uint256 amount);
 event Paid(address indexed token, address indexed account, uint256 amount);
 event TreasurySwept(address indexed token, address indexed treasury, uint256 amount);
+/// @dev `amount` of `token` left for burning: $YOLO straight to 0x…dEaD, any other token to the BuybackBurner.
+event Burned(address indexed token, uint256 amount);
+
 event SubmissionSettled(
-    uint256 indexed subId, bool nftRight, uint256 penalty, uint256 toWinners, uint256 toVoters, uint256 toTreasury
+    uint256 indexed subId,
+    bool nftRight,
+    uint256 penaltyImd,
+    uint256 toVotersImd,
+    uint256 toTreasuryImd,
+    uint256 penaltyRew,
+    uint256 toVotersRew,
+    uint256 toTreasuryRew
 );
 event ParamsCached(uint32 indexed version);
 
@@ -290,29 +383,46 @@ error BadCurrency();
 error BadAmount();
 error BadDeadline();
 error BadText();
+/// @dev A text resupplied to build the swarm question does not hash to what was stored at creation/dispute:
+///      wrong text, wrong order, or tampered calldata.
+error RulesMismatch();
 error BadTitle();
 error BadCategory();
 error BadProofType();
 error BadCover();
 /// @dev proofUri does not have the form its task's proof type requires (TextLib.checkProof).
 error BadProof(uint8 proofType);
-/// @dev Evidence: a note breaking the text rule or longer than MAX_NOTE_BYTES, or a codec flag without a screenshot.
+/// @dev Evidence: a note breaking the text rule or longer than MAX_NOTE_BYTES, or a screenshotUrl that is not a
+///      bare `https://` link within MAX_SCREENSHOT_URL_BYTES (TextLib.checkScreenshotUrl).
 error BadEvidence();
+/// @dev A screenshot link (or video link, same Evidence.screenshotUrl) is mandatory for the
+///      proof types the swarm cannot open itself (x_post, x_reply — both PROOF_X_POST — and video).
+error EvidenceRequired();
+/// @dev A proof link or screenshot link that is not `https://` on a host of the allowlist, or longer than
+///      MAX_LINK_BYTES (TextLib.checkHost).
+error HostNotAllowed();
 error RewardTooSmall();
-error FeeTooLow();
-error FeeOutOfRange();
 error NotEnoughEth();
 error TaskNotOpen();
 error DeadlinePassed();
 error WrongPhase();
 error WindowClosed();
 error AlreadyDisputed();
-/// @dev The doer of a submission cannot dispute it (audit C-01).
+/// @dev The doer of a submission cannot dispute it.
 error DoerCannotDispute();
+/// @dev The sender neither owns `tokenId` nor is a delegate.xyz delegate of its owner.
+error NotTokenHolder(uint256 tokenId);
+/// @dev `tokenId` already voted in this dispute, or appears twice in the list.
+error TokenVoted(uint256 tokenId);
+/// @dev A vote with no NFT ids.
+error NoTokens();
+/// @dev A vote with a side other than 1/2 or no payTo.
+error BadVote();
+/// @dev The wallet already voted the other side on this submission: the side cannot change.
+error AlreadyVoted();
 error RewardChanged();
 error CostAboveMax();
 error ImdShort();
-error NotDoer();
 error NotOpponent();
 error AlreadyReplied();
 error SwarmUnavailable();
@@ -320,20 +430,14 @@ error ActionNotSold();
 error UnknownRequest();
 error NothingToClaim();
 error NotFinal();
-error NotStuck();
-error NoNotice();
-error NoticeNotDue(uint64 leavingAt);
-/// @notice `announceWithdraw` while a submission is active: wait for it to clear (audit round 2, finding 16).
-error SubmissionActive();
-/// @notice `announceWithdraw` while a notice already given is still live: wait for it to lapse, or withdraw once it
-///         is due, instead of renewing it (audit round 2, finding 16).
-error NoticeLive(uint64 validUntil);
 error InsufficientGas();
 error SwapDisabled();
 error SwapExpired();
 error SwapShort();
-error OnlySelf();
 error TransferFailed();
+/// @dev withdraw/withdrawTo to the zero address: a plain ETH `call` to address(0) would otherwise
+///      succeed and burn the money with no way back.
+error WithdrawToZero();
 /// @dev A desk function called by someone other than the vault or the desk it serves.
 error NotAuthorized();
 /// @dev The vault has no route for this selector.

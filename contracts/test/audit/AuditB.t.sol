@@ -4,11 +4,9 @@ pragma solidity ^0.8.28;
 import "../Base.t.sol";
 import {IIntake} from "../../src/interfaces/IIntake.sol";
 
-/// @dev Internal audit B (core: TaskVault, VaultParams, VaultTypes, ParamsRegistry, ProtocolDirectory,
-///      OracleAttestation, AttestationChecker, interfaces). One test per finding (`test_Bxx_*` reproduces it,
-///      `test_Fix_Bxx_*` fails on the original code and passes with the fix, `test_Fixed_Bxx_*` is a former PoC
-///      turned into a guard after a rule change) plus guards for what was checked.
-///      Acknowledged findings are described in docs/AUDIT-INTERNAL.md; each lists its impact and why it was accepted.
+/// @dev Core checks (TaskVault, VaultParams, VaultTypes, ParamsRegistry, ProtocolDirectory,
+/// OracleAttestation, AttestationChecker, interfaces): `test_Guard_*` guard the current rules against known attacks;
+/// `test_Guard_*` guard everything else checked here.
 contract AuditBTest is Base {
     // ================================================================== helpers
 
@@ -23,7 +21,7 @@ contract AuditBTest is Base {
     }
 
     /// @dev The `question` member of a body built by SwarmQuestion: it starts after `{"v":1,"question":"` (19 bytes)
-    ///      and ends at the next quote (user texts never contain one).
+    /// and ends at the next quote (user texts never contain one).
     function _questionOf(bytes memory body) internal pure returns (bytes memory q) {
         uint256 start = 19;
         uint256 end = start;
@@ -34,22 +32,22 @@ contract AuditBTest is Base {
         }
     }
 
-    // ================================================================== B-01
+    // ================================================================== swarm answers
 
-    /// @notice B-01 (fixed: the public fallback `submitAttestation` was removed). It bound an attestation to
-    ///         our request only by `questionHash` = keccak256(question). The question is public and deterministic
-    ///         (`previewSwarmBody`, or the `Requested` event) and leaves out every party text (claims, replies,
-    ///         appeal: they are `definitions`). A third party orders the same question with one-sided definitions in
-    ///         his own Intake request naming the vault as consumer; the panel's answer to HIS request passed every
-    ///         check for OUR request once ours completed without a delivered answer. Now an answer reaches the vault
-    ///         only through the Intake callback of our own request id: the copied answer cannot be handed in, our
-    ///         "no consensus" stays silence and the tie rule accepts (doer paid 90 USDC).
-    function test_Fixed_B01_ThirdPartyAnswerToACopiedQuestionCannotDecideOurCase() public {
+    /// @notice There is no public fallback `submitAttestation`. Such a fallback would bind an attestation to
+    /// our request only by `questionHash` = keccak256(question). The question is public and deterministic
+    /// (`previewSwarmBody`, or the `Requested` event) and leaves out every party text (the rule texts,
+    /// the claims and the doer note: they are `definitions`). A third party orders the same question with one-sided definitions in
+    /// his own Intake request naming the vault as consumer, and tries to pass the panel's answer to HIS request
+    /// off as the answer to OUR request once ours completed without a delivered answer. An answer reaches the vault
+    /// only through the Intake callback of our own request id: the copied answer cannot be handed in, our
+    /// "no consensus" stays silence and the undecided rule accepts (doer paid 90 USDC).
+    function test_Guard_ThirdPartyAnswerToACopiedQuestionCannotDecideOurCase() public {
         (uint256 t, uint256 s) = _noDecisionCase();
 
         // erin (who is about to call the swarm against the doer) reads the next question; its hash is what the
         // vault will store (nonce = asks + 1 is known in advance)
-        (bytes memory preview, bytes32 qh) = vault.previewSwarmBody(s, SWARM_KIND_ESCALATION);
+        (bytes memory preview, bytes32 qh) = vault.previewSwarmBody(s, SWARM_KIND_ESCALATION, _genericRuleTexts());
         bytes memory question = _questionOf(preview);
         assertEq(keccak256(question), qh, "question hash reproducible by anyone");
 
@@ -76,7 +74,7 @@ contract AuditBTest is Base {
         bytes memory sig = _sign(a, attesterKey);
         intake.complete(herRid, 0, a, sig);
 
-        // now she calls the swarm for real (bond 1 IMD + fee 0.5 IMD)
+        // now she calls the swarm for real (bond 0.5 IMD fixed + 1e6 USDC (1% of R), + fee 0.5 IMD)
         _callSwarm(erin, s, false);
         bytes32 ourRid = _sub(s).request;
         assertTrue(ourRid != herRid);
@@ -87,38 +85,38 @@ contract AuditBTest is Base {
         intake.complete(ourRid, 2, none, "");
 
         // --- attack: before anyone pokes, erin tries to relay the answer to HER request as the answer to OURS:
-        //     the fallback is gone, and the callback refuses anyone but our Intake
+        // there is no fallback, and the callback refuses anyone but our Intake
         _expectNoFallback(ourRid, a, sig);
         vm.prank(erin);
         vault.onOracleResult(ourRid, a, sig);
         assertFalse(vault.requests(ourRid).answered, "the copied answer is not recorded");
 
-        // --- the honest outcome stands: silence, nobody calls again, the tie rule accepts after 24 h
+        // --- the honest outcome stands: silence, nobody calls again, the undecided rule accepts after 24 h
         vault.poke(t);
         assertEq(uint8(_phase(s)), uint8(Phase.NoDecision));
         _warp(24 hours);
         vault.poke(t);
         assertEq(uint8(_sub(s).outcome), uint8(Outcome.Accepted));
-        assertEq(vault.credits(address(usdc), doer), 90e6, "doer paid 90 USDC");
+        // 90% of R, plus his own rew bond back (3%), plus dave's forfeited dispute bond (1%): erin's own call was
+        // silent (no consensus), so her dispute bond simply comes back to her, it is never forfeited.
+        assertEq(vault.credits(address(usdc), doer), 90e6 + 3e6 + 1e6, "doer paid 90% + his bond + dave's bond");
         _claimEverythingAndCheck();
     }
 
-    // ================================================================== B-02
+    // ================================================================== attester removal
 
-    /// @notice B-02 (design): removing an attester waits the same 48 h as adding one. Before the B-01 fix a leaked attester
-    ///         key kept deciding every case whose request completed without a delivered answer for 48 h after the
-    ///         owner reacted, through the public fallback. With the fallback removed (B-01) the key alone decides
-    ///         nothing: an answer must come as the Intake's own callback for our request id.
-    function test_Fixed_B02_LeakedAttesterKeyAloneCannotDecideDuringTheRemovalTimelock() public {
+    /// @notice Removing an attester waits the same 48 h as adding one. There is no public fallback,
+    /// so a leaked attester key alone decides nothing: an answer must come as the Intake's own callback for our request id.
+    function test_Guard_LeakedAttesterKeyAloneCannotDecideDuringTheRemovalTimelock() public {
         (uint256 t, uint256 s) = _noDecisionCase();
         _callSwarm(erin, s, true);
         bytes32 rid = _sub(s).request;
         OracleAttestation.Attestation memory none;
         intake.complete(rid, 1, none, ""); // the plane refused the body: no answer
 
-        vm.startPrank(owner);
-        registry.proposeAttester(makeAddr("newAttester"), true); // the owner reacts at once: a new key ...
-        registry.proposeAttester(attester, false); // ... and the leaked one out (never the last one: swarm audit #10)
+        vm.startPrank(multisig);
+        registry.proposeAttester(makeAddr("newAttester"), true); // the owner reacts at once: a new key...
+        registry.proposeAttester(attester, false); //... and the leaked one out (never the last one: swarm audit 117cf05a #10)
         vm.stopPrank();
         _warp(47 hours);
         OracleAttestation.Attestation memory a = _attestation(false);
@@ -131,22 +129,22 @@ contract AuditBTest is Base {
         assertFalse(vault.requests(rid).answered);
         assertTrue(registry.isAttester(attester), "still an attester 47 h after the owner acted");
         vault.poke(t);
-        // the refused request was silence (at the 6 h timeout), nobody called again: the tie rule accepts
+        // the refused request was silence (at the 6 h timeout), nobody called again: the undecided rule accepts
         assertEq(uint8(_sub(s).outcome), uint8(Outcome.Accepted), "no reject from the leaked key");
     }
 
     // ================================================================== guards (checked and found correct)
 
     /// @dev A contract that rejects ETH and blocked token holders never lose money: every failed push becomes a
-    ///      credit, `withdrawTo` moves it elsewhere, and the books close at zero.
+    /// credit, `withdrawTo` moves it elsewhere, and the books close at zero.
     function test_Guard_FailedPushesBecomeCreditsAndBooksClose() public {
         EthRejecter r = new EthRejecter(vault);
         vm.deal(address(r), 10 ether);
         imd.mint(address(r), 100e18);
         // author is the rejecter: excess ETH refund fails -> credited
-        uint256 t = r.create{value: 0.1 ether}(0.05 ether, 0.001 ether);
+        uint256 t = r.create{value: 0.1 ether}(0.05 ether);
         trackedTasks.push(t);
-        assertEq(vault.credits(ETH, address(r)), 0.1 ether - 0.05 ether - 0.001 ether);
+        assertEq(vault.credits(ETH, address(r)), 0.1 ether - 0.05 ether); // no author fee 
         // the doer gets blocked by IMD (OFT `blocked`): his void bond is credited, not lost
         uint256 s1 = _submit(doer, t);
         uint256 s2 = _submit(doer2, t);
@@ -154,25 +152,31 @@ contract AuditBTest is Base {
         _warp(24 hours);
         vault.poke(t);
         assertEq(uint8(_sub(s1).outcome), uint8(Outcome.Accepted));
+        uint256 doer2EthBefore = doer2.balance;
         vault.claimVoidSubmission(s2);
-        assertEq(vault.credits(address(imd), doer2), _sub(s2).bond);
+        // the task's currency is ETH, so the bond's fixed IMD part is pushed (and credited, IMD-blocked) while its
+        // percent (rew) part in ETH is pushed straight to doer2's wallet balance (he is not ETH-blocked 
+        // bond.rew is always in the reward's own currency, not necessarily IMD).
+        Bond memory voidBond = _sub(s2).bond;
+        assertEq(vault.credits(address(imd), doer2), voidBond.imd);
+        assertEq(doer2.balance - doer2EthBefore, voidBond.rew);
         vm.prank(doer2);
         vault.withdrawTo(address(imd), makeAddr("doer2-new"));
-        assertEq(imd.balanceOf(makeAddr("doer2-new")), _sub(s2).bond);
+        assertEq(imd.balanceOf(makeAddr("doer2-new")), voidBond.imd);
         // the rejecter withdraws its ETH credit to an EOA
         r.withdrawTo(makeAddr("r-new"));
-        assertEq(makeAddr("r-new").balance, 0.049 ether);
+        assertEq(makeAddr("r-new").balance, 0.05 ether);
         imd.setBlocked(doer2, false);
         _claimEverythingAndCheck();
     }
 
     /// @dev Payment mode A (swap) books exactly what is needed whatever the user overpays: the IMD surplus and the
-    ///      excess ETH go back, USDC never stays, and the vault ends at zero after everything is claimed.
+    /// excess ETH go back, USDC never stays, and the vault ends at zero after everything is claimed.
     function testFuzz_Guard_ModeAPaymentsBookExactly(uint256 amt, uint96 extraEth, uint96 extraIn, bool usdcIn) public {
-        uint256 amount = bound(amt, 1e18, 39e18); // below the 40 IMD check threshold: the dispute opens at once
+        uint256 amount = bound(amt, 1e18, 39e18); // $8..$312 (no mandatory check on any size)
         uint256 extra = bound(extraEth, 0, 1 ether);
         ImdPay memory pay;
-        uint256 value = 0.001 ether + extra;
+        uint256 value = extra;
         if (usdcIn) {
             pay.tokenIn = address(usdc);
             pay.amountIn = amount * 8 / 1e12 + 1 + bound(extraIn, 0, 1_000e6); // 1 USDC = 0.125 IMD
@@ -188,20 +192,22 @@ contract AuditBTest is Base {
         uint256 ethBefore = author.balance;
         vm.prank(author);
         uint256 t = vault.createTask{value: value}(
-            address(imd), amount, 0, "Title", "ipfs://task-condition", 0, 0, "", 0.001 ether, pay
+            address(imd), amount, uint64(_now() + TTL), "Title", rulesOf("ipfs://task-condition"), 0, PROOF_LINK, "", pay
         );
         trackedTasks.push(t);
         uint256 got = usdcIn ? pay.amountIn * 0.125e30 / 1e18 : pay.amountIn * 312.5e18 / 1e18;
         assertEq(imd.balanceOf(author) - imdBefore, got - amount, "IMD surplus returned");
         assertEq(usdcBefore - usdc.balanceOf(author), usdcIn ? pay.amountIn : 0, "USDC: exactly amountIn");
-        assertEq(ethBefore - author.balance, 0.001 ether + (usdcIn ? 0 : pay.amountIn), "excess ETH returned");
+        assertEq(ethBefore - author.balance, usdcIn ? 0 : pay.amountIn, "excess ETH returned");
         assertEq(vault.liabilities(address(imd)), amount);
         assertEq(imd.balanceOf(address(vault)), amount);
         assertEq(usdc.balanceOf(address(vault)), 0);
         _assertSolvent();
-        // the doer pays bond (+ check) through the same swap path
-        (uint256 bond, uint256 fee) = vault.quoteSubmission(t);
-        ImdPay memory p2 = ImdPay(ETH, (bond + fee) * 1e18 / 312.5e18 + 1e15, bond + fee, uint64(_now() + 600), "");
+        // the doer pays his bond through the same swap path (no check fee)
+        // the task's currency is IMD: the bond's fixed and percent parts merge into one IMD amount, swappable
+        Bond memory bond = vault.quoteSubmission(t);
+        uint256 needed = bond.imd + bond.rew;
+        ImdPay memory p2 = ImdPay(ETH, needed * 1e18 / 312.5e18 + 1e15, needed, uint64(_now() + 600), "");
         vm.prank(doer);
         uint256 s = vault.submit{value: p2.amountIn + extra}(
             t, "https://x.com/doer/status/1", _noEvidence(), 0, type(uint256).max, p2
@@ -212,14 +218,17 @@ contract AuditBTest is Base {
         _claimEverythingAndCheck();
     }
 
-    /// @dev Pinned dependencies (info, B-06): a task keeps its version's oracle and Intake for good. If the pinned
-    ///      oracle dies, contributors still take their money back. (That new submissions are then refused is the
-    ///      acknowledged finding B-06, docs/AUDIT-INTERNAL.md.)
-    function test_Guard_DeadPinnedOracleNeverBlocksWithdrawals() public {
+    /// @dev Pinned dependencies (info): a task keeps its version's DevPrices and Intake for good. If the pinned
+    /// DevPrices reverts, contributors still take their money back once the reward unlocks at the deadline (nothing
+    /// leaves an open task); a submission still goes through, only without the stake bonus.
+    function test_Guard_RevertingPinnedDevPricesNeverBlocksWithdrawals() public {
         uint256 t = _create(author, address(usdc), 100e6);
         oracle.setBroken(true);
         uint256 before = usdc.balanceOf(author);
-        _announceWithdraw(author, t);
+        vm.prank(author);
+        vm.expectRevert(TaskNotOpen.selector); // locked until the deadline
+        vault.withdrawContribution(t);
+        vm.warp(vault.getTask(t).deadline); // expiry needs no oracle
         vm.prank(author);
         vault.withdrawContribution(t);
         assertEq(usdc.balanceOf(author) - before, 100e6);
@@ -228,7 +237,7 @@ contract AuditBTest is Base {
     }
 
     /// @dev Bank functions refuse users; a user cannot reach them through the forwarder either (the vault routes only
-    ///      ITaskVault selectors to the desks, and the desks read the sender the vault appended).
+    /// ITaskVault selectors to the desks, and the desks read the sender the vault appended).
     function test_Guard_BankOnlyForDesks() public {
         ImdPay memory none;
         vm.startPrank(alice);
@@ -237,20 +246,16 @@ contract AuditBTest is Base {
         vm.expectRevert(NotAuthorized.selector);
         TaskVault(payable(address(vault))).pay(ETH, alice, 1);
         vm.expectRevert(NotAuthorized.selector);
-        TaskVault(payable(address(vault))).bookEth(1, true);
-        vm.expectRevert(NotAuthorized.selector);
         TaskVault(payable(address(vault))).addTreasury(ETH, 1);
         vm.expectRevert(NotAuthorized.selector);
         TaskVault(payable(address(vault))).collectImd(bob, 0, 1e18, address(0), none);
         vm.expectRevert(NotAuthorized.selector);
         TaskVault(payable(address(vault))).closeSubmission(1, Outcome.Accepted, 0);
-        vm.expectRevert(OnlySelf.selector);
-        TaskVault(payable(address(vault))).advanceFromSelf(1);
         vm.stopPrank();
     }
 
     /// @dev Every pinned snapshot stays byte-identical after a new version is activated; only the attester set and
-    ///      the sweep's treasury follow the registry live.
+    /// the sweep's treasury follow the registry live.
     function testFuzz_Guard_PinnedVersionNeverChanges(uint16 fee, uint32 window) public {
         uint256 t = _create(author, address(usdc), 100e6);
         bytes32 before = keccak256(abi.encode(registry.params(1)));
@@ -259,7 +264,7 @@ contract AuditBTest is Base {
         p.nftFeeBps = 0;
         p.disputeWindow = uint32(bound(window, 24 hours, 7 days));
         p.treasury = makeAddr("newTreasury");
-        vm.prank(owner);
+        vm.prank(multisig);
         registry.proposeParams(p);
         _warp(48 hours);
         registry.activateParams();
@@ -268,7 +273,7 @@ contract AuditBTest is Base {
     }
 
     /// @dev Lazy timers: the longest chain of due transitions in one call is far below the 8-step bound (a queued
-    ///      submission starts its own timers at activation, so one call cannot run through two submissions' timers).
+    /// submission starts its own timers at activation, so one call cannot run through two submissions' timers).
     function test_Guard_LongestDueChainFitsOneCall() public {
         uint256 t = _create(author, address(usdc), 100e6);
         uint256 s1 = _submit(doer, t);
@@ -292,9 +297,11 @@ contract EthRejecter {
         vault = v;
     }
 
-    function create(uint256 amount, uint256 fee) external payable returns (uint256) {
+    function create(uint256 amount) external payable returns (uint256) {
         ImdPay memory none;
-        return vault.createTask{value: msg.value}(ETH, amount, 0, "Title", "cond", 0, 0, "", fee, none);
+        return vault.createTask{value: msg.value}(
+            ETH, amount, uint64(block.timestamp + 365 days), "Title", rulesOf("cond"), 0, PROOF_LINK, "", none
+        );
     }
 
     function withdrawTo(address to) external {

@@ -6,7 +6,6 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ParamsCore} from "../VaultParams.sol";
 import {ParamsRegistry} from "../ParamsRegistry.sol";
 import {IIntake} from "../interfaces/IIntake.sol";
-import {IPriceOracle} from "../interfaces/IPriceOracle.sol";
 import {TextRules} from "../helpers/TextRules.sol";
 import {IVault} from "./DeskApi.sol";
 import "../VaultTypes.sol";
@@ -63,7 +62,7 @@ abstract contract Desk {
         if (open == 0 || vault != address(0)) revert WiringClosed();
         if (registry_ != registry || imd_ != address(imd) || usdc_ != address(usdc)) revert WrongWiring();
         if (caseDesk_ == address(0) || disputeDesk_ == address(0)) revert WrongWiring();
-        // the vault must put this desk in its own slot: swapped desks used to deploy and then revert every
+        // the vault must put this desk in its own slot: swapped desks would deploy and then revert every
         // submission
         if ((isCaseDesk() ? caseDesk_ : disputeDesk_) != address(this)) revert WrongWiring();
         vault = msg.sender;
@@ -113,78 +112,28 @@ abstract contract Desk {
         }
     }
 
-    /// @dev max(minBond, bondBase + bps of R in IMD); the whole bond is penalty (no swarm reserve inside)
-    function _bondFor(uint256 rewardImd, uint16 bps, ParamsCore memory p) internal pure returns (uint256 b) {
-        b = p.bondBase + rewardImd * bps / BPS;
-        if (b < p.minBond) b = p.minBond;
+    /// @dev Percent part of a bond (no escalation, always the same
+    ///      bps, never above `amount` itself). No oracle: `amount` (the author's own reward) is already in the
+    ///      task's currency.
+    function _pctBond(uint256 amount, uint16 bps) internal pure returns (uint256 b) {
+        if (amount == 0) return 0;
+        b = amount * bps / BPS;
+        if (b > amount) b = amount;
     }
 
-    /// @dev Doer bond: base x 2^(rejected submissions + submissions ahead in the queue), exponent capped.
-    function _doerBond(uint256 rejected, uint256 ahead, ParamsCore memory p, uint256 rewardImd)
-        internal
-        pure
-        returns (uint256)
-    {
-        uint256 n = rejected + ahead;
-        if (n > p.maxDoublings) n = p.maxDoublings;
-        return _bondFor(rewardImd, p.doerBondBps, p) << n;
+    /// @dev The doer bond of a submission: 0.5 IMD fixed + 3% of the author's own reward `base` (no top-ups of
+    ///      others, no $YOLO add-on), always the same regardless of rejected submissions or the
+    ///      queue.
+    function _doerBond(uint256 base, ParamsCore memory p) internal pure returns (Bond memory b) {
+        b.imd = p.bondFixedImd;
+        b.rew = _pctBond(base, p.doerBondBps);
     }
 
-    /// @dev R in IMD, IMD per 1 ETH, and whether R reaches the mandatory-check threshold.
-    function _priceReward(address currency, uint256 r, ParamsCore memory p)
-        internal
-        view
-        returns (uint256 rewardImd, uint256 imdPerEth, bool large)
-    {
-        IPriceOracle o = IPriceOracle(p.priceOracle);
-        if (currency == address(imd)) {
-            // IMD tasks do not depend on the oracle: without a rate the relayer shortfall is simply not recorded
-            try o.imdValue(ETH, 1e18) returns (uint256 rate) {
-                imdPerEth = rate;
-            } catch {}
-            rewardImd = r;
-            large = r >= p.largeRewardImd;
-        } else if (currency == ETH || currency == address(usdc)) {
-            imdPerEth = o.imdValue(ETH, 1e18);
-            rewardImd = o.imdValue(currency, r);
-            large = o.usdValue(currency, r) >= p.largeRewardUsd;
-        } else {
-            (rewardImd, imdPerEth, large) = _priceYolo(o, currency, r, p);
-        }
-    }
-
-    /// @dev $YOLO (the vault takes no fourth currency). Without a reliable price (too few pool samples, or any oracle
-    ///      call reverting) the task counts as large: mandatory swarm check, and Bonds sized as for a reward at the
-    ///      large threshold (`largeRewardImd`), never below what a priced value gives. A missing price
-    ///      can only make a submission dearer; the oracle's floor and highest-sample rule keep a low price out.
-    function _priceYolo(IPriceOracle o, address yolo, uint256 r, ParamsCore memory p)
-        private
-        view
-        returns (uint256 rewardImd, uint256 imdPerEth, bool large)
-    {
-        try o.imdValue(ETH, 1e18) returns (uint256 rate) {
-            imdPerEth = rate; // 0 = no relayer shortfall recorded, as for IMD tasks
-        } catch {}
-        bool priced;
-        try o.hasPrice(yolo) returns (bool ok) {
-            priced = ok;
-        } catch {}
-        if (priced) {
-            try o.imdValue(yolo, r) returns (uint256 v) {
-                rewardImd = v;
-            } catch {
-                priced = false;
-            }
-            try o.usdValue(yolo, r) returns (uint256 usd) {
-                large = usd >= p.largeRewardUsd;
-            } catch {
-                priced = false;
-            }
-        }
-        if (!priced) {
-            large = true;
-            if (rewardImd < p.largeRewardImd) rewardImd = p.largeRewardImd;
-        }
+    /// @dev The dispute/appeal bond of a submission: the fixed IMD part plus 1% of the author's own reward `base`
+    ///      (no top-ups of others, no $YOLO add-on).
+    function _disputeBond(uint256 base, ParamsCore memory p) internal pure returns (Bond memory b) {
+        b.imd = p.bondFixedImd;
+        b.rew = _pctBond(base, p.disputeBondBps);
     }
 
     /// @dev Every user string sent to the swarm: TextLib.validText with the version's length limit.

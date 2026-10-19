@@ -37,7 +37,7 @@ contract AttestationChecker {
     /// @notice The message `chainId` is the evidence chain chosen in bodyFields and is not checked; the consumer chain
     ///         and contract are bound by the EIP-712 domain. An answer of a smaller panel or quorum than the one
     ///         ordered (`minPanelSize` / `minQuorum`, the same numbers as in bodyFields) is not the swarm's verdict.
-    ///         An attestation past its signed `expiresAt` is not accepted (swarm audit #9; 0 = no expiry).
+    ///         An attestation past its signed `expiresAt` is not accepted (0 = no expiry).
     /// @return code 0 ok, 2 answer type / encoding, 4 panel / quorum, 5 signer not in the attester set, 6 expired
     function check(
         address consumer,

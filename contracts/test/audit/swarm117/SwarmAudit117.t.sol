@@ -3,46 +3,16 @@ pragma solidity ^0.8.28;
 
 import "../../Base.t.sol";
 
-/// @dev Swarm audit of this repository at d9a1ee5: regressions of findings #3 to #10 (the report gave no source for
-///      these; each test follows the report's reproduction and fails on d9a1ee5). #1 and #2: SampleSandwich.t.sol,
-///      VestingClockPreStart.t.sol. #11 (Intake version 2): ReviewLaunch.test_L2 against docs/LAUNCH-TASK.md.
+/// @dev Swarm audit 117cf05a of moneycanbuy d9a1ee5: regressions of findings #3 to #10 (the report gave no source for
+/// these; each test follows the report's reproduction and fails on d9a1ee5). #2:
+/// VestingClockPreStart.t.sol. #11 (Intake version 2): ReviewLaunch.test_L2 against docs/LAUNCH-TASK.md.
 contract SwarmAudit117Test is Base {
     uint8 internal constant ACCEPT = 1;
     uint8 internal constant REJECT = 2;
 
     // ------------------------------------------------------------------ #3 relayer shortfall vs winners and voters
-
-    /// The report: a losing voter relays his own 20 reject ballots one NFT per batch at 20 gwei: 12.4 IMD shortfall
-    /// against a 1 IMD penalty; on d9a1ee5 the whole penalty went to him, the correct votes got 0.
-    function test_losingVoterDrainsPenaltyByRelayingOwnBallots() public {
-        uint256 t = _create(author, address(usdc), 100e6);
-        uint256 s = _submit(doer, t);
-        _dispute(dave, s); // bond 1 IMD, 0.001 ETH into the dispute pot
-        vm.fee(1 gwei);
-        _vote(s, 0, ACCEPT, 0, 120); // honest batch by the relayer
-        vm.fee(20 gwei);
-        for (uint256 i; i < 20; ++i) {
-            Ballot[] memory one = new Ballot[](1);
-            one[0] = _ballot(s, 1, REJECT, _ids(120 + i, 1), voters[1]);
-            vm.prank(voters[1]);
-            vault.submitVotes(s, one);
-        }
-        assertGt(vault.relayerShortfall(s, voters[1]), 1e18, "metered far above the 1 IMD penalty");
-        _endVote(s); // accept 120 : reject 20, decided
-        _warp(24 hours);
-        vault.poke(t);
-        assertEq(uint8(_sub(s).outcome), uint8(Outcome.Accepted));
-        Settlement memory st = vault.getSettlement(s);
-        // penalty 1 IMD: relayers together at most 20%, the rest 50/50 to the doer and the correct votes
-        assertLe(st.shortfallPay, 0.2e18, "relayers never take more than 20% of the penalty");
-        assertGe(st.voterImd, 0.4e18, "the correct votes keep their half of the rest");
-        uint256 before = imd.balanceOf(voters[1]);
-        vm.prank(voters[1]);
-        vault.claimRelayerShortfall(s);
-        assertLe(imd.balanceOf(voters[1]) - before, 0.2e18);
-        assertGe(vault.credits(address(imd), doer), 1e18 + 0.4e18, "the doer's bond back plus his share");
-        _claimEverythingAndCheck();
-    }
+    // Not applicable: nobody is reimbursed for voting gas (each voter pays his own),
+    // so there is no shortfall to grief.
 
     // ------------------------------------------------------------------ #4 the doer appeals his own acceptance
 
@@ -56,15 +26,15 @@ contract SwarmAudit117Test is Base {
     }
 
     function test_doerAppealsAgainstOwnAcceptance() public {
-        (, uint256 s) = _decidedAccept();
+        (uint256 t, uint256 s) = _decidedAccept();
         vm.prank(doer);
         vm.expectRevert(DoerCannotDispute.selector);
-        vault.appeal(s, "ipfs://weak-argument", type(uint256).max, _noSwap());
-        // the slot stays free for an honest disputer, and the doer is his opponent
+        vault.appeal(s, type(uint256).max, _noSwap());
+        // the slot stays free for an honest disputer; the doer's "why honest" went in at submission (
+        // no opponent-reply step on an appeal)
         _appeal(dave, s);
         assertEq(vault.getAppeal(s).appellant, dave);
-        vm.prank(doer);
-        vault.appealReply(s, "ipfs://doer-reply");
+        _askAppealSwarm(s); // lazy ask
         _claimEverythingAndCheck();
     }
 
@@ -88,7 +58,7 @@ contract SwarmAudit117Test is Base {
         assertEq(uint8(_phase(s)), uint8(Phase.NoDecision));
         vm.prank(doer);
         vm.expectRevert(DoerCannotDispute.selector);
-        vault.callSwarm(s, false, "ipfs://against-myself", type(uint256).max, _noSwap());
+        vault.callSwarm(s, false, type(uint256).max, _noSwap(), _genericRuleTexts());
         _callSwarm(doer, s, true); // for himself: fine
         assertEq(uint8(_phase(s)), uint8(Phase.Asked));
         _claimEverythingAndCheck();
@@ -100,95 +70,40 @@ contract SwarmAudit117Test is Base {
         uint256 t = _create(author, address(usdc), 100e6);
         uint256 s = _submit(doer, t);
         _dispute(dave, s);
-        Ballot[] memory bs = new Ballot[](2);
-        bs[0] = _ballot(s, 1, ACCEPT, _ids(120, 10), voters[1]);
-        bs[1] = _ballot(s, 1, REJECT, _ids(130, 10), voters[1]);
-        vm.prank(relayer);
-        vault.submitVotes(s, bs);
-        (uint256 acc, uint256 rej) = vault.votesOf(s, voters[1]);
+        _vote(s, 2, ACCEPT, 140, 10); // 10 < instantDelta: the vote stays open
+        // a second vote of the same wallet reverts, either side (the side cannot change)
+        vm.prank(voters[2]);
+        vm.expectRevert(AlreadyVoted.selector);
+        vault.vote(s, REJECT, voters[2], _ids(140, 10));
+        // the other side with another payTo is refused too: the vote belongs to the sender
+        vm.prank(voters[2]);
+        vm.expectRevert(AlreadyVoted.selector);
+        vault.vote(s, REJECT, relayer, _ids(140, 10));
+        (uint256 acc, uint256 rej) = vault.votesOf(s, voters[2]);
         assertEq(acc, 10);
-        assertEq(rej, 0, "the second side of the same wallet is skipped");
+        assertEq(rej, 0);
         Dispute memory d = vault.getDispute(s);
         assertEq(d.walletsAccept, 1);
         assertEq(d.walletsReject, 0);
-        assertFalse(vault.tokenVoted(s, 130), "the skipped NFTs stay unused");
-        // a later batch cannot add the other side either
-        Ballot[] memory later = new Ballot[](1);
-        later[0] = _ballot(s, 1, REJECT, _ids(130, 10), voters[1]);
-        vm.prank(relayer);
-        vault.submitVotes(s, later);
-        (, rej) = vault.votesOf(s, voters[1]);
-        assertEq(rej, 0);
-        // the same side again is fine
-        later[0] = _ballot(s, 1, ACCEPT, _ids(130, 10), voters[1]);
-        vm.prank(relayer);
-        vault.submitVotes(s, later);
-        (acc,) = vault.votesOf(s, voters[1]);
-        assertEq(acc, 20);
         _claimEverythingAndCheck();
     }
 
     // ------------------------------------------------------------------ #6 sweetener payout without a price
 
-    function _completedSweetened(uint256 bonus) internal returns (uint256 t, uint256 s) {
-        t = _create(author, address(usdc), 100e6);
-        vm.prank(alice);
-        sweetener.sweeten(t, bonus);
-        s = _submit(doer, t);
-        _warp(24 hours);
-        vault.poke(t);
-        assertEq(uint8(vault.getTask(t).status), uint8(TaskStatus.Completed));
-    }
+    // #6 sweetener tests: SwarmAudit117SweetenerTest below (split keeps this contract off solc's 64 KiB tag
+    // boundary, "Tag too large for reserved space").
 
-    function test_sweetenerPayoutWithoutPriceReturnsAllToSweetener() public {
-        (uint256 t, uint256 s) = _completedSweetened(100_000e18);
-        oracle.set(address(yolo), 0, 18); // the keeper lapsed: no YOLO price
-        uint256 before = yolo.balanceOf(doer);
-        vm.prank(alice);
-        sweetener.payout(t, s);
-        assertEq(yolo.balanceOf(doer), before, "nothing moves without a price");
-        assertEq(sweetener.returnBase(t), 0, "nothing goes back to the sweetener");
-        assertEq(sweetener.bonusOf(t), 100_000e18);
-        vm.prank(alice);
-        vm.expectRevert(YoloSweetener.BonusLocked.selector);
-        sweetener.withdraw(t);
-        // a price again ($0.0001: 100,000 YOLO = $10, below the $300 cap): the doer gets it all minus the fee
-        oracle.set(address(yolo), 0.0001e18, 18);
-        sweetener.payout(t, s);
-        assertEq(yolo.balanceOf(doer) - before, 90_000e18);
-        _claimEverythingAndCheck();
-    }
-
-    function test_sweetenerPayoutAfterAWeekWithoutPricePaysInFull() public {
-        (uint256 t, uint256 s) = _completedSweetened(10_000_000e18); // $1,000 at the last price: above the cap
-        oracle.set(address(yolo), 0, 18);
-        uint256 before = yolo.balanceOf(doer);
-        sweetener.payout(t, s);
-        assertEq(sweetener.noPriceSince(t), _now());
-        _warp(sweetener.NO_PRICE_WAIT() - 1);
-        sweetener.payout(t, s);
-        assertEq(yolo.balanceOf(doer), before, "still waiting");
-        _warp(1);
-        sweetener.payout(t, s);
-        assertEq(yolo.balanceOf(doer) - before, 9_000_000e18, "a week with no price at all: in full");
-        _claimEverythingAndCheck();
-    }
-
-    function test_sweetenerCapStillAppliesWithAPrice() public {
-        (uint256 t, uint256 s) = _completedSweetened(10_000_000e18); // $1,000 > $300
-        uint256 before = yolo.balanceOf(doer);
-        sweetener.payout(t, s);
-        assertEq(yolo.balanceOf(doer) - before, 2_700_000e18, "3,000,000 YOLO = $300, minus 10%");
-        assertEq(sweetener.returnBase(t), 10_000_000e18);
-        _claimEverythingAndCheck();
-    }
 
     // ------------------------------------------------------------------ #7 a late answer vs the poke order
+    // (the timing rule on a paid call without an NFT decision)
 
-    function _largeAsked() internal returns (uint256 t, uint256 s, uint256 askedAt) {
+    function _calledAsked() internal returns (uint256 t, uint256 s, uint256 askedAt) {
         t = _create(author, address(usdc), 300e6);
         s = _submit(doer, t);
-        assertEq(uint8(_sub(s).check), uint8(CheckState.Requested));
+        _dispute(dave, s);
+        _warp(24 hours); // no votes: NoDecision
+        _callSwarm(erin, s);
+        assertEq(uint8(_phase(s)), uint8(Phase.Asked));
         askedAt = _now();
     }
 
@@ -201,12 +116,12 @@ contract SwarmAudit117Test is Base {
     /// The report: sequence A (poke at the deadline, then a "no" signed at T+1h delivered at T+6h+60s) ended
     /// Accepted, sequence B (no poke) Rejected. Both end Rejected now.
     function test_pokeAtDeadlineTurnsLateAnswerIntoSilence() public {
-        (uint256 t, uint256 s, uint256 askedAt) = _largeAsked();
+        (uint256 t, uint256 s, uint256 askedAt) = _calledAsked();
         uint256 snap = vm.snapshotState();
         // A: someone pokes right at the timeout
         vm.warp(askedAt + 6 hours);
         vault.poke(t);
-        assertEq(uint8(_sub(s).check), uint8(CheckState.Requested), "not silent while the answer may still come");
+        assertEq(uint8(_phase(s)), uint8(Phase.Asked), "not silent while the answer may still come");
         vm.warp(askedAt + 6 hours + 60);
         _deliver(s, false, askedAt + 1 hours);
         _warp(24 hours);
@@ -225,11 +140,11 @@ contract SwarmAudit117Test is Base {
     }
 
     function test_answerAfterTheGraceIgnoredWhoeverPoked() public {
-        (uint256 t, uint256 s, uint256 askedAt) = _largeAsked();
+        (uint256 t, uint256 s, uint256 askedAt) = _calledAsked();
         vm.warp(askedAt + 6 hours + SWARM_DELIVERY_GRACE);
         vault.poke(t); // past the grace: silence, the window opens at the end of the grace
-        assertEq(uint8(_sub(s).check), uint8(CheckState.None));
-        assertEq(_sub(s).windowEnd, askedAt + 6 hours + SWARM_DELIVERY_GRACE + 24 hours);
+        assertEq(uint8(_phase(s)), uint8(Phase.NoDecision));
+        assertEq(_sub(s).callFrom, askedAt + 6 hours + SWARM_DELIVERY_GRACE);
         uint256 snap = vm.snapshotState();
         _deliver(s, false, askedAt + 1 hours); // after the grace: ignored, whoever poked
         _warp(24 hours);
@@ -243,11 +158,11 @@ contract SwarmAudit117Test is Base {
     }
 
     function test_answerDeliveredAfterTheGraceIgnoredEvenUnpoked() public {
-        (uint256 t, uint256 s, uint256 askedAt) = _largeAsked();
+        (uint256 t, uint256 s, uint256 askedAt) = _calledAsked();
         vm.warp(askedAt + 6 hours + SWARM_DELIVERY_GRACE + 1);
         _deliver(s, false, askedAt + 1 hours); // signed in time, delivered past the grace, nobody poked before
         vault.poke(t);
-        assertEq(uint8(_sub(s).check), uint8(CheckState.None), "silence: the answer came too late");
+        assertEq(uint8(_phase(s)), uint8(Phase.NoDecision), "silence: the answer came too late");
         _warp(24 hours);
         vault.poke(t);
         assertEq(uint8(_sub(s).outcome), uint8(Outcome.Accepted));
@@ -255,69 +170,60 @@ contract SwarmAudit117Test is Base {
     }
 
     function test_answerSignedAfterTheTimeoutIsSilenceAtTheEndOfTheGrace() public {
-        (uint256 t, uint256 s, uint256 askedAt) = _largeAsked();
+        (uint256 t, uint256 s, uint256 askedAt) = _calledAsked();
         vm.warp(askedAt + 6 hours + 10 minutes);
         _deliver(s, false, askedAt + 6 hours + 5 minutes); // signed late
         vault.poke(t);
-        assertEq(uint8(_sub(s).check), uint8(CheckState.Requested), "decided only at the end of the grace");
+        assertEq(uint8(_phase(s)), uint8(Phase.Asked), "decided only at the end of the grace");
         vm.warp(askedAt + 6 hours + SWARM_DELIVERY_GRACE);
         vault.poke(t);
-        assertEq(uint8(_sub(s).check), uint8(CheckState.None));
-        assertEq(_sub(s).windowEnd, askedAt + 6 hours + SWARM_DELIVERY_GRACE + 24 hours);
+        assertEq(uint8(_phase(s)), uint8(Phase.NoDecision));
+        assertEq(_sub(s).callFrom, askedAt + 6 hours + SWARM_DELIVERY_GRACE);
         _claimEverythingAndCheck();
     }
 
     // ------------------------------------------------------------------ #8 the author pulls the reward
+    // (the reward is locked until the deadline: nothing leaves an open task)
 
     function test_authorFrontRunsSubmitWithWithdrawal() public {
         uint256 t = _create(author, ETH, 0.01 ether);
         // the proof is public; the author tries to pull the reward before the doer's submit lands
         vm.prank(author);
-        vm.expectRevert(NoNotice.selector);
+        vm.expectRevert(TaskNotOpen.selector); // locked: nothing leaves an open task
         vault.withdrawContribution(t);
         vm.prank(doer);
-        vault.submit(t, "https://x.com/doer/status/1", _noEvidence(), 0.01 ether, type(uint256).max, _noSwap());
+        // an ETH-reward task's bond.rew part also comes from msg.value (never transferFrom).
+        vault.submit{value: ETH_BOND_HEADROOM}(
+            t, "https://x.com/doer/status/1", _noEvidence(), 0.01 ether, type(uint256).max, _noSwap()
+        );
         assertEq(vault.getTask(t).pot, 0.01 ether);
         _claimEverythingAndCheck();
     }
 
-    function test_announcedWithdrawalGivesTheDoerAnHour() public {
-        uint256 t = _create(author, ETH, 0.01 ether);
+    /// No withdrawal notice exists; the reward stays until the deadline,
+    /// also past it while a submission is judged, and an accepted one takes it.
+    function test_rewardLockedUntilTheDeadlineAndWhileJudged() public {
+        uint256 t = _createWithDeadline(author, ETH, 0.01 ether, uint64(_now() + 2 days));
+        _warp(2 days - 1);
         vm.prank(author);
-        vault.announceWithdraw(t);
-        assertEq(vault.withdrawNoticeAt(t, author), _now() + 1 hours);
-        _warp(1 hours - 1);
-        vm.prank(author);
-        vm.expectRevert(abi.encodeWithSelector(NoticeNotDue.selector, uint64(_now() + 1)));
+        vm.expectRevert(TaskNotOpen.selector);
         vault.withdrawContribution(t);
-        // the doer, warned, submits inside the hour: the share is at stake now
-        uint256 s = _submit(doer, t);
-        _warp(1);
+        uint256 s = _submit(doer, t); // the last second
+        _warp(1); // past the deadline, the submission under review
         vm.prank(author);
-        vm.expectRevert(NothingToClaim.selector);
+        vm.expectRevert(TaskNotOpen.selector);
         vault.withdrawContribution(t);
         _warp(24 hours);
         vault.poke(t);
         assertEq(uint8(_sub(s).outcome), uint8(Outcome.Accepted));
+        vm.prank(author);
+        vm.expectRevert(NothingToClaim.selector); // the reward went to the doer
+        vault.withdrawContribution(t);
         _claimEverythingAndCheck();
     }
 
-    function test_noticeExpiresAfterADay() public {
-        uint256 t = _create(author, ETH, 0.01 ether);
-        vm.prank(author);
-        vault.announceWithdraw(t);
-        _warp(1 hours + 1 days + 1);
-        vm.prank(author);
-        vm.expectRevert(NoNotice.selector);
-        vault.withdrawContribution(t);
-        _announceWithdraw(author, t);
-        uint256 before = author.balance;
-        vm.prank(author);
-        vault.withdrawContribution(t);
-        assertEq(author.balance - before, 0.01 ether);
-        assertEq(vault.withdrawNoticeAt(t, author), 0, "a notice is used once");
-        _claimEverythingAndCheck();
-    }
+    // A top-up during the check joins the reward: test/ContractRules.t.sol test_UsdcTopUpDuringCheck_InTheDoersPayout
+    // (a separate contract keeps this one's bytecode off the 64 KiB solc tag boundary).
 
     function test_noNoticeNeededAfterExpiry() public {
         uint256 t = _createWithDeadline(author, ETH, 0.01 ether, uint64(_now() + 1 days));
@@ -332,7 +238,7 @@ contract SwarmAudit117Test is Base {
     // ------------------------------------------------------------------ #9 expired attestation
 
     function test_expiredAttestationIsIgnored() public {
-        (uint256 t, uint256 s,) = _largeAsked();
+        (uint256 t, uint256 s,) = _calledAsked();
         bytes32 rid = _sub(s).request;
         OracleAttestation.Attestation memory a = _attestation(false);
         a.expiresAt = uint64(_now() - 1);
@@ -351,7 +257,7 @@ contract SwarmAudit117Test is Base {
 
     function test_lastAttesterCannotBeRemoved() public {
         assertEq(registry.attesterCount(), 1);
-        vm.prank(owner);
+        vm.prank(multisig);
         registry.proposeAttester(attester, false);
         _warp(48 hours);
         vm.expectRevert(ParamsRegistry.LastAttester.selector);
@@ -359,12 +265,12 @@ contract SwarmAudit117Test is Base {
         assertTrue(registry.isAttester(attester));
         // a second one first: then either may go, but never both
         address second = makeAddr("attester2");
-        vm.prank(owner);
+        vm.prank(multisig);
         registry.proposeAttester(second, true);
         _warp(48 hours);
         registry.executeAttester(second, true);
         assertEq(registry.attesterCount(), 2);
-        vm.startPrank(owner);
+        vm.startPrank(multisig);
         registry.proposeAttester(attester, false);
         registry.proposeAttester(second, false);
         vm.stopPrank();
@@ -376,4 +282,57 @@ contract SwarmAudit117Test is Base {
         registry.executeAttester(second, false);
         assertTrue(registry.isAttester(second));
     }
+}
+
+contract SwarmAudit117SweetenerTest is Base {
+    function _completedSweetened(uint256 bonus) internal returns (uint256 t, uint256 s) {
+        t = _create(author, address(usdc), 100e6);
+        vm.prank(alice);
+        sweetener.sweeten(t, bonus);
+        s = _submit(doer, t);
+        _warp(24 hours);
+        vault.poke(t);
+        assertEq(uint8(vault.getTask(t).status), uint8(TaskStatus.Completed));
+    }
+
+    /// #6: there is no cap (no mandatory check), so the payout reads no price: without one it pays at once.
+    function test_sweetenerPayoutWithoutPricePaysAtOnce() public {
+        (uint256 t,) = _completedSweetened(100_000e18);
+        oracle.set(address(yolo), 0, 18); // no YOLO price set
+        uint256 before = yolo.balanceOf(doer);
+        vm.prank(alice);
+        sweetener.payout(t);
+        assertEq(yolo.balanceOf(doer) - before, 90_000e18, "90%, at once");
+        assertEq(sweetener.bonusOf(t), 0);
+        vm.prank(alice);
+        vm.expectRevert(YoloSweetener.BonusLocked.selector); // nothing goes back to the sweetener
+        sweetener.withdraw(t);
+        oracle.set(address(yolo), 0.0001e18, 18);
+        _claimEverythingAndCheck();
+    }
+
+    /// Without a price: in full at once, whatever the size.
+    function test_sweetenerLargeBonusWithoutPricePaysInFull() public {
+        (uint256 t,) = _completedSweetened(9_000_000e18); // $900 at the price of the sweetening ($1,000 with R)
+        oracle.set(address(yolo), 0, 18);
+        uint256 before = yolo.balanceOf(doer);
+        uint256 deadBefore = yolo.balanceOf(address(burner));
+        sweetener.payout(t);
+        assertEq(yolo.balanceOf(doer) - before, 8_100_000e18);
+        assertEq(yolo.balanceOf(address(burner)) - deadBefore, 900_000e18, "the fee burns");
+        oracle.set(address(yolo), 0.0001e18, 18);
+        _claimEverythingAndCheck();
+    }
+
+    /// With a price: no cap either.
+    function test_sweetenerNoCapWithAPrice() public {
+        (uint256 t,) = _completedSweetened(9_000_000e18); // $900
+        uint256 before = yolo.balanceOf(doer);
+        uint256 aliceBefore = yolo.balanceOf(alice);
+        sweetener.payout(t);
+        assertEq(yolo.balanceOf(doer) - before, 8_100_000e18, "the whole bonus minus 10%");
+        assertEq(yolo.balanceOf(alice), aliceBefore, "nothing back to the sweetener");
+        _claimEverythingAndCheck();
+    }
+
 }

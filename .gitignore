@@ -1,5 +1,5 @@
 # Foundry
-contracts/out/
-contracts/cache/
-contracts/broadcast/
+out/
+cache/
+broadcast/
 .env

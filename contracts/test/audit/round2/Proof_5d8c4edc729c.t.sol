@@ -16,11 +16,11 @@ contract GriefNft is ERC721("identity.md", "IMDID") {
 ///         cooldown then blocks every honest hide vote: 10 honest holders in 10 wallets voting on day 2 count nothing
 ///         and the item stays VISIBLE for the whole week. Fails on this code; passes once an uncontested round that
 ///         fell short of quorum (no keep votes) starts no cooldown, so the honest round opens immediately.
-/// @dev The report's two intermediate checks (`roundEnd < now`, `hideNfts + hideWallets == 2`) describe the BUG's
-///      own symptom (honest votes silently dropped) and cannot hold under any fix that actually lets those votes
-///      through: once they count, a fresh round necessarily opens with `roundEnd` in the future. Replaced with the
-///      fixed-code analogue (a new round opens right away and counts all ten); the real regression check, that the
-///      item ends up `HIDDEN_BY_VOTE` within the week instead of staying grieved, is unchanged.
+/// @dev The report's two intermediate checks (`roundEnd < now`, `hideNfts + hideWallets == 2`)
+///      describe the BUG's own symptom (honest votes silently dropped) and cannot hold under any fix that actually
+///      lets those votes through: once they count, a fresh round necessarily opens with `roundEnd` in the future.
+///      Replaced with the fixed-code analogue (a new round opens right away and counts all ten); the real regression
+///      check, that the item ends up `HIDDEN_BY_VOTE` within the week instead of staying grieved, is unchanged.
 contract HiddenListCooldownGriefTest is Test {
     HiddenList list;
     GriefNft nft;

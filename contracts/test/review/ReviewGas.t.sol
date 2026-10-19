@@ -5,7 +5,7 @@ import {console} from "forge-std/console.sol";
 import {Base} from "../Base.t.sol";
 import "../../src/VaultTypes.sol";
 
-/// @dev Gas of the heaviest lazy steps at the maximum current parameters (16 disputers, 256-byte texts).
+/// @dev Gas of the heaviest lazy step: one disputer with a 256-byte reason and proof, the longest doer note.
 contract ReviewGas is Base {
     uint8 constant REJECT = 2;
 
@@ -17,7 +17,16 @@ contract ReviewGas is Base {
         return string(b);
     }
 
-    /// @dev The longest valid proof: a link to an X post (task type x_post), padded to 256 bytes with a query tail.
+    /// @dev The longest allowed Evidence.note (MAX_NOTE_BYTES = 512).
+    function _longNote(bytes1 c) internal pure returns (string memory) {
+        bytes memory b = new bytes(MAX_NOTE_BYTES);
+        for (uint256 i; i < MAX_NOTE_BYTES; ++i) {
+            b[i] = c;
+        }
+        return string(b);
+    }
+
+    /// @dev A long proof: a link to an X post (task type x_post), padded to 256 bytes with a query tail.
     function _longProof() internal pure returns (string memory) {
         bytes memory head = "https://x.com/doer/status/1?";
         bytes memory b = new bytes(256);
@@ -27,52 +36,58 @@ contract ReviewGas is Base {
         return string(b);
     }
 
+    /// @dev One dispute, one disputer - the worst-case question body is just
+    ///      one 256-byte reason plus the doer's max-length note (no "first maxClaims of many"). The doer's
+    ///      "why honest" text is the Evidence.note attached at submission; there is no separate doer reply.
     function _fullCase() internal returns (uint256 t, uint256 s) {
         t = _create(author, address(usdc), 100e6);
         vm.prank(doer);
-        s = vault.submit(t, _longProof(), _noEvidence(), 0, type(uint256).max, _noSwap());
-        for (uint256 i; i < 16; ++i) {
-            address d = address(uint160(0xD15000 + i));
-            vm.deal(d, 1 ether);
-            imd.mint(d, 10e18);
-            vm.startPrank(d);
-            imd.approve(address(vault), type(uint256).max);
-            vault.dispute{value: 0.001 ether}(s, _longText("r"), 0.001 ether, _noSwap());
-            vm.stopPrank();
-        }
-        vm.prank(doer);
-        vault.reply(s, _longText("d"));
+        s = vault.submit(
+            t, _longProof(), Evidence("", _longNote("d")), 0, type(uint256).max, _noSwap()
+        );
+        address d = address(uint160(0xD15000));
+        _fund(d); // the dispute bond's rew part is in the task's own currency (USDC here), not IMD
+        vm.prank(d);
+        vault.dispute(s, _longText("r"), _longText("p"), _noSwap());
     }
 
-    /// The poke that asks the appeal question must fit EMERGENCY_ADVANCE_GAS (2.5M) with margin, otherwise the
-    /// emergency exit unwinds a case the machine could have advanced.
-    function test_R6_AppealAskGas_UnderEmergencyBudget() public {
+    /// @dev Worst-case resupply for `_fullCase` - the task's 3 rule texts
+    ///      (generic, `_genericRuleTexts()`) plus the 256B dispute reason/proof `_fullCase` actually filed.
+    function _fullCaseRuleTexts() internal pure returns (RuleTexts memory rt) {
+        rt = _genericRuleTexts();
+        rt.disputeReason = _longText("r");
+        rt.disputerProofUri = _longText("p");
+    }
+
+    /// The ask is a separate step - appeal() only files it; `askAppealSwarm` resupplies
+    /// (3x task rules + reason + proof) and asks; it must stay under 1.5M gas.
+    function test_AppealAskGas_Under1_5M() public {
         (uint256 t, uint256 s) = _fullCase();
         _vote(s, 0, REJECT, 0, 100);
         _endVote(s); // the NFT decides at the vote end
         vm.prank(doer);
-        vault.appeal(s, _longText("a"), type(uint256).max, _noSwap());
-        vm.prank(address(uint160(0xD15000)));
-        vault.appealReply(s, _longText("b"));
+        vault.appeal(s, type(uint256).max, _noSwap());
+        assertEq(uint8(_phase(s)), uint8(Phase.Appealed));
         uint256 g = gasleft();
-        vault.poke(t);
+        vault.askAppealSwarm(s, _fullCaseRuleTexts());
         g -= gasleft();
-        console.log("poke -> appeal question, gas:", g);
+        console.log("askAppealSwarm -> swarm question (lazy ask, with resupply), gas:", g);
         console.log("body bytes:", intake.lastBodyLength());
         assertEq(uint8(_phase(s)), uint8(Phase.Asked));
         assertLt(g, 1_500_000);
+        vault.poke(t); // no-op: already Asked
     }
 
-    function test_R6_CallSwarmGas_MaxBody() public {
+    function test_CallSwarmGas_MaxBody() public {
         (uint256 t, uint256 s) = _fullCase();
         _warp(24 hours);
         vault.poke(t);
         assertEq(uint8(_phase(s)), uint8(Phase.NoDecision));
         vm.prank(dave);
         uint256 g = gasleft();
-        vault.callSwarm(s, false, "ipfs://caller-reason", type(uint256).max, _noSwap());
+        vault.callSwarm(s, false, type(uint256).max, _noSwap(), _fullCaseRuleTexts());
         g -= gasleft();
-        console.log("callSwarm max body, gas:", g);
+        console.log("callSwarm max body (with resupply), gas:", g);
         console.log("body bytes:", intake.lastBodyLength());
     }
 }

@@ -107,8 +107,9 @@
     <img src="assets/img/nft-1000.svg" width="180" height="180" alt="identity.md #1000, archetype Cipher Body" loading="lazy">
     <img src="assets/img/nft-4.svg" width="180" height="180" alt="identity.md #4, archetype Noise Oracle" loading="lazy">
   </div>
-  <p class="lead">1 NFT = 1 vote, gasless (EIP-712 signatures). A margin of 10 votes decides. Either side can appeal to
-  the $IMD swarm, which has the last word.</p>
+  <p class="lead">1 NFT = 1 vote, by token id. Each voter sends their own vote and pays their own gas. A lead of 20
+  votes decides at once, else a margin of 10 when the 24h vote ends. The NFT decision can be appealed to the $IMD swarm (swarm fee, plus a bond
+  unless the appellant is a side of the dispute; the doer cannot appeal an acceptance); its answer is final.</p>
   <a class="link-ext" href="https://etherscan.io/address/0x0000eC93127BAA929E58E97dd0095A2BFb38ec1D" target="_blank" rel="noopener noreferrer">identity.md contract on Etherscan ↗</a>
 </section>
 
@@ -122,20 +123,20 @@
     <div class="calc-amount">
       <label class="calc-label" for="calc-amount">Reward</label>
       <div class="calc-amount-row">
-        <span class="calc-sign" id="calc-sign">$</span>
-        <input type="number" id="calc-amount" min="5" max="1000" step="1" value="100" inputmode="decimal" aria-label="Reward amount">
+        <input type="number" id="calc-amount" min="5" step="1" value="100" inputmode="decimal" aria-label="Reward amount">
         <select id="calc-currency" aria-label="Paid in">
           <option value="USDC" selected>USDC</option>
           <option value="ETH">ETH</option>
           <option value="IMD">IMD</option>
+          <option value="YOLO">YOLO</option>
         </select>
       </div>
       <input type="range" id="calc-slider" min="5" max="1000" step="1" value="100" aria-label="Reward slider">
       <div class="calc-quick" id="calc-quick">
-        <button type="button" data-amt="20">$20</button>
-        <button type="button" data-amt="100">$100</button>
-        <button type="button" data-amt="300">$300</button>
-        <button type="button" data-amt="1000">$1000</button>
+        <button type="button" data-amt="20">20</button>
+        <button type="button" data-amt="100">100</button>
+        <button type="button" data-amt="300">300</button>
+        <button type="button" data-amt="1000">1,000</button>
       </div>
       <div class="calc-flags" id="calc-flags"></div>
     </div>
@@ -198,12 +199,24 @@
     <div class="calc-receipts" id="calc-receipts"></div>
 
     <details class="legend">
-      <summary>Currencies, formulas &amp; edge cases</summary>
-      <p>Bonds are always $IMD. Doer bond = max(1, 0.5 + 3% of the reward in IMD); dispute bond = max(1, 0.5 + 1%)
-      &mdash; both can double up to ×256 for an earlier rejected try or a submission still waiting in the queue.
-      Rewards can lock in ETH, USDC, IMD or $YOLO; this demo shows ETH and USDC at their $ value and IMD at the
-      example price. A flat ≥0.0005 ETH author fee goes to the treasury on posting, never refunded. An NFT tie or
-      no dispute at all pays the doer by default; a decided swarm appeal is paid first from the loser's bond.</p>
+      <summary>Rules &amp; formulas</summary>
+      <ul>
+        <li>Reward in ETH, USDC, IMD or $YOLO. Minimum 5 USDC, 0.002 ETH, 1 IMD or 1,000 YOLO; no maximum. Locked
+        until the deadline. No fee to post.</li>
+        <li>Doer bond: 0.5 IMD + 3% of the author's reward. Dispute bond: 0.5 IMD + 1%. The % part is paid in the
+        reward's currency. Same bond for every try.</li>
+        <li>Accepted: the doer gets 90%. Of the 10% fee, 5% goes to NFT voters who decided right, the rest to the
+        treasury; on a $YOLO reward that part burns. A doer with a $YOLO lock gets up to 4% of the reward on top, from the
+        other 5%; then the unearned NFT 5% burns and what is left of the other 5% goes half to the burn, half to the treasury.</li>
+        <li>The loser's bond: half to the winner, half to NFT voters who were right; all to the winner if the vote
+        did not decide or was overturned. A tie or no dispute pays the doer.</li>
+        <li>The dev wallet can cancel an open dare: everyone gets back what they put in, except swarm fees already paid; it takes nothing.</li>
+        <li>$YOLO first hour: minutes 0-30, only wallets in a sealed snapshot of identity.md holders buy (500,000
+        YOLO per NFT, no registration, no buy tax), every sell pays 30%. Minutes 30-60, anyone trades; buy and sell
+        tax fall from 30% to 0. Then no tax.</li>
+        <li>A doer of an accepted dare can mint a trophy NFT for a fixed 7,777 YOLO, burned; the design comes from
+        the trophy catalog.</li>
+      </ul>
     </details>
   </div>
 </section>

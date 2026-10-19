@@ -33,13 +33,12 @@ contract CoverTest is Base {
         return vault.createTask{value: 0.001 ether}(
             address(usdc),
             50e6,
-            0,
+            uint64(_now() + TTL),
             "Title",
-            "Post a thread on X | Proof: link",
+            rulesOf("Post a thread on X | Proof: link"),
             category,
-            0,
+            PROOF_LINK, // cover/category tests don't care about proof type, keep it optional
             cover,
-            0.001 ether,
             _noSwap()
         );
     }
@@ -47,20 +46,31 @@ contract CoverTest is Base {
     function _expectBadCover(string memory cover) internal {
         vm.prank(author);
         vm.expectRevert(BadCover.selector);
-        vault.createTask{value: 0.001 ether}(address(usdc), 50e6, 0, "Title", "c", 0, 0, cover, 0.001 ether, _noSwap());
+        vault.createTask{value: 0.001 ether}(address(usdc), 50e6, uint64(_now() + TTL), "Title", rulesOf("c"), 0, 0, cover, _noSwap());
     }
 
     function test_CategoryStoredAndCoverEmitted() public {
         uint256 next = vault.taskCount() + 1;
         vm.expectEmit(address(vault));
         emit TaskCreated(
-            next, author, address(usdc), 50e6, 0, "Title", "Post a thread on X | Proof: link", 4, 0, IPFS_COVER
+            next,
+            author,
+            address(usdc),
+            50e6,
+            uint64(_now() + TTL),
+            "Title",
+            rulesOf("Post a thread on X | Proof: link"),
+            4,
+            PROOF_LINK,
+            IPFS_COVER
         );
         uint256 t = _createWith(4, IPFS_COVER);
         assertEq(t, next);
         Task memory task = vault.getTask(t);
         assertEq(task.category, 4);
-        assertEq(task.condition, "Post a thread on X | Proof: link"); // the condition stays clean
+        // storage holds only the hash; the full text is in the TaskCreated event
+        // asserted above (vm.expectEmit) - this checks the hash still matches it byte for byte.
+        assertEq(task.rulesHash, keccak256(abi.encode("Post a thread on X | Proof: link", TEST_RULE_PROOF, TEST_RULE_NO)));
         assertEq(uint8(task.status), uint8(TaskStatus.Open));
         assertEq(task.currency, address(usdc)); // packing the category next to it did not corrupt the slot
         assertEq(task.busyEpoch, 0);
@@ -73,11 +83,11 @@ contract CoverTest is Base {
         vm.prank(author);
         vm.expectRevert(BadCategory.selector);
         vault.createTask{value: 0.001 ether}(
-            address(usdc), 50e6, 0, "Title", "c", CATEGORY_COUNT, 0, "", 0.001 ether, _noSwap()
+            address(usdc), 50e6, uint64(_now() + TTL), "Title", rulesOf("c"), CATEGORY_COUNT, 0, "", _noSwap()
         );
         vm.prank(author);
         vm.expectRevert(BadCategory.selector);
-        vault.createTask{value: 0.001 ether}(address(usdc), 50e6, 0, "Title", "c", 255, 0, "", 0.001 ether, _noSwap());
+        vault.createTask{value: 0.001 ether}(address(usdc), 50e6, uint64(_now() + TTL), "Title", rulesOf("c"), 255, 0, "", _noSwap());
     }
 
     function test_CoverLinksAccepted() public {
@@ -106,7 +116,7 @@ contract CoverTest is Base {
         _expectBadCover("https://a.com/\\x");
         _expectBadCover("https://a.com/\x7f");
         _expectBadCover("https://a.com/\n");
-        _expectBadCover(unicode"https://δοκιμή.ελ/a.png"); // non-ASCII: IDNs go in punycode
+        _expectBadCover("https://b\u00fccher.de/a.png"); // non-ASCII: IDNs go in punycode
     }
 
     /// @dev The swarm reads the condition and the claims only: a cover never reaches the question.
@@ -116,7 +126,9 @@ contract CoverTest is Base {
         _dispute(dave, s);
         _warp(24 hours);
         vault.poke(t);
-        (bytes memory body,) = vault.previewSwarmBody(s, 2);
+        (bytes memory body,) = vault.previewSwarmBody(
+            s, 2, RuleTexts("Post a thread on X | Proof: link", TEST_RULE_PROOF, TEST_RULE_NO, DISPUTE_REASON, DISPUTER_PROOF)
+        );
         assertFalse(_contains(body, bytes("bafkrei")));
         assertFalse(_contains(body, bytes("ipfs://bafk")));
         assertTrue(_contains(body, bytes("Post a thread on X | Proof: link")));
@@ -128,7 +140,15 @@ contract CoverTest is Base {
         uint256 s = _submit(doer, t);
         _dispute(dave, s);
         _warp(24 hours);
-        _callSwarm(erin, s);
+        // _createWith's task rules are not the generic fixture's ("ipfs://task-condition"): resupply the right
+        // text here instead of _callSwarm's _genericRuleTexts(), or CaseDesk._ask reverts RulesMismatch.
+        TaskRules memory r = rulesOf("Post a thread on X | Proof: link");
+        RuleTexts memory rt = _genericRuleTexts();
+        rt.task = r.task;
+        rt.taskProof = r.proof;
+        rt.taskNo = r.noIf;
+        vm.prank(erin);
+        vault.callSwarm{value: ETH_BOND_HEADROOM}(s, false, type(uint256).max, _noSwap(), rt);
         _answer(s, true);
         _warp(30 days);
         vault.poke(t);

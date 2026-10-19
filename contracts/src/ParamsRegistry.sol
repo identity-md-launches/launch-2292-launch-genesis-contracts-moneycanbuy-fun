@@ -16,7 +16,7 @@ import {Params, ParamsCore, ParamsBounds, LaunchParams} from "./VaultParams.sol"
 ///         - The owner has no function that moves, freezes or redirects deposited money.
 ///         - Trust (docs/MECHANICS.md "Trust assumptions"): the attester set is global, so a change reaches the swarm
 ///           answers of tasks already running (at least one attester always stays); and a new version may name other
-///           counterparties (intake, nft, delegateRegistry, priceOracle), which then judge every task created under it.
+///           counterparties (intake, nft, delegateRegistry, devPrices), which then judge every task created under it.
 contract ParamsRegistry is Ownable2Step {
     uint256 public constant TIMELOCK = 48 hours;
 
@@ -29,7 +29,7 @@ contract ParamsRegistry is Ownable2Step {
 
     /// @notice Signers accepted on swarm attestations (global: key rotation must reach old tasks too).
     mapping(address => bool) public isAttester;
-    /// @notice How many signers are in the attester set; the last one cannot be removed (swarm audit #10).
+    /// @notice How many signers are in the attester set; the last one cannot be removed (swarm audit 117cf05a #10).
     uint256 public attesterCount;
     /// @dev keccak256(attester, allowed) => eta
     mapping(bytes32 => uint64) public attesterChangeEta;
@@ -53,14 +53,14 @@ contract ParamsRegistry is Ownable2Step {
     constructor(
         address owner_,
         address intake,
-        address priceOracle,
+        address devPrices,
         address swapAdapter,
         address nft,
         address delegateRegistry,
         address treasury,
         address attester
     ) Ownable(owner_) {
-        Params memory initial = LaunchParams.initial(intake, priceOracle, swapAdapter, nft, delegateRegistry, treasury);
+        Params memory initial = LaunchParams.initial(intake, devPrices, swapAdapter, nft, delegateRegistry, treasury);
         ParamsBounds.validate(initial);
         if (attester == address(0)) revert ParamsBounds.ParamOutOfBounds("attester");
         currentVersion = 1;
@@ -111,45 +111,43 @@ contract ParamsRegistry is Ownable2Step {
     function core(uint32 version) external view returns (ParamsCore memory c) {
         Params storage p = _params[version];
         c.intake = p.intake;
-        c.priceOracle = p.priceOracle;
+        c.devPrices = p.devPrices;
         c.swapAdapter = p.swapAdapter;
         c.nft = p.nft;
         c.delegateRegistry = p.delegateRegistry;
         c.treasury = p.treasury;
         c.swarmAction = p.swarmAction;
-        c.minRewardUsd = p.minRewardUsd;
+        c.minRewardUsdc = p.minRewardUsdc;
+        c.minRewardEth = p.minRewardEth;
         c.minRewardImd = p.minRewardImd;
-        c.largeRewardUsd = p.largeRewardUsd;
-        c.largeRewardImd = p.largeRewardImd;
-        c.minAuthorFee = p.minAuthorFee;
-        c.minBond = p.minBond;
-        c.bondBase = p.bondBase;
-        c.minDisputeFee = p.minDisputeFee;
-        c.maxDisputeFee = p.maxDisputeFee;
+        c.minRewardYolo = p.minRewardYolo;
+        c.bondFixedImd = p.bondFixedImd;
         c.doerBondBps = p.doerBondBps;
         c.disputeBondBps = p.disputeBondBps;
-        c.maxDoublings = p.maxDoublings;
         c.maxClaims = p.maxClaims;
         c.maxTextBytes = p.maxTextBytes;
         c.disputeWindow = p.disputeWindow;
-        c.replyWindow = p.replyWindow;
         c.voteWindow = p.voteWindow;
         c.appealWindow = p.appealWindow;
-        c.appealReplyWindow = p.appealReplyWindow;
         c.swarmTimeout = p.swarmTimeout;
-        c.emergencyDelay = p.emergencyDelay;
         c.instantDelta = p.instantDelta;
         c.endDelta = p.endDelta;
         c.minWinnerWallets = p.minWinnerWallets;
-        c.relayBaseGas = p.relayBaseGas;
-        c.maxRelayGasPerVote = p.maxRelayGasPerVote;
-        c.relayMarkupBps = p.relayMarkupBps;
         c.feeBps = p.feeBps;
         c.nftFeeBps = p.nftFeeBps;
         c.winnerBondBps = p.winnerBondBps;
-        c.tieDoerBps = p.tieDoerBps;
         c.minPanelSize = p.minPanelSize;
         c.minQuorum = p.minQuorum;
+    }
+
+    /// @notice What an NFT vote reads (DisputeDesk.vote): four slots instead of the whole ParamsCore.
+    function voteParams(uint32 version)
+        external
+        view
+        returns (address nft, address delegateRegistry, uint32 instantDelta, uint32 minWinnerWallets)
+    {
+        Params storage p = _params[version];
+        return (p.nft, p.delegateRegistry, p.instantDelta, p.minWinnerWallets);
     }
 
     /// @notice The swarm question template of `version`.

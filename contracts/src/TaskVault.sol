@@ -3,12 +3,13 @@ pragma solidity ^0.8.28;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 import {ParamsRegistry} from "./ParamsRegistry.sol";
 import {ParamsCore} from "./VaultParams.sol";
 import {OracleAttestation} from "./OracleAttestation.sol";
 import {IIntake} from "./interfaces/IIntake.sol";
-import {IPriceOracle} from "./interfaces/IPriceOracle.sol";
+import {DevPrices} from "./DevPrices.sol";
 import {ISwapAdapter} from "./interfaces/ISwapAdapter.sol";
 import {ITaskVault} from "./interfaces/ITaskVault.sol";
 import {AskTerms, SubmitTerms, ICaseDesk} from "./desks/DeskApi.sol";
@@ -16,13 +17,24 @@ import {AttestationChecker} from "./helpers/AttestationChecker.sol";
 import {TextRules} from "./helpers/TextRules.sol";
 import "./VaultTypes.sol";
 
+/// @dev The vault's YoloSweetener as the vault reads it: the $YOLO add-on of a task.
+interface IAddon {
+    function vault() external view returns (address);
+    function bonusOf(uint256 taskId) external view returns (uint256);
+}
+
 interface IDeskWiring {
     function wire(address registry, address imd, address usdc, address caseDesk, address disputeDesk) external;
 }
 
-/// @title TaskVault v6 (the rules: docs/MECHANICS.md)
+/// @dev Where a burn share of ETH, USDC or IMD is sent directly.
+interface IBurnerWallet {
+    function buybackWallet() external view returns (address);
+}
+
+/// @title TaskVault
 /// @notice Escrow for real-world tasks. Rewards in ETH, USDC, IMD or $YOLO; doers post IMD bonds; anyone can dispute;
-///         identity.md NFT holders vote with EIP-712 signatures relayed in batches; the IMD swarm (Intake) is the
+///         identity.md NFT holders vote, each with their own transaction (`vote(...tokenIds)`); the IMD swarm (Intake) is the
 ///         final instance.
 ///
 ///         One public address. Users call, approve tokens to, and read only this contract (full interface:
@@ -33,16 +45,24 @@ interface IDeskWiring {
 ///         ETH stays here. One reentrancy lock covers every state-changing call, here and in the desks.
 ///
 ///         Money rules
-///         - Every amount held belongs to exactly one bucket: a task pot or pending top-ups, a submission's bonds,
+///         - Every amount held belongs to exactly one bucket: a task pot, a submission's bonds,
 ///           check or appeal prepayments, a dispute ETH pot, a settlement bucket waiting for lazy claims, a treasury
 ///           pot, or a user credit. `liabilities[token]` is their sum and changes only when money enters or leaves.
 ///           Invariant: token balance >= liabilities[token]. Nothing is paid from the "general balance". All payouts
 ///           are pull (claims, `withdraw`). Only this contract moves money; the desks tell it what to book.
+///         - Rewards are locked until the deadline: nobody who put money into a task takes it
+///           back before the task expired or was unwound; a top-up during a check joins the reward at once.
+///         - Burning: $YOLO the treasury would get goes to the BuybackBurner and sits there until anyone presses
+///           "Burn". ETH, USDC and IMD burn shares go straight to the buyback wallet in the same transaction as the
+///           payout; if that transfer reverts (a wallet
+///           with no `receive`), the payout itself must not fail — that share lands in the BuybackBurner instead,
+///           for its own `forward` to retry later.
 ///         - The vault has no owner. The ParamsRegistry owner (the project wallet) can only change parameters for
-///           future tasks and the attester set (48h timelock) and pause task creation.
+///           future tasks and the attester set (48h timelock) and pause task creation. The dev wallet (owner of the
+///           DevPrices) can cancel an open task (`cancelTask`): all money goes back to whoever put it in, none to it.
 ///
 ///         Lifecycle: timers are played lazily at the start of every call that touches a task (`advance`);
-///         swarm questions are paid by whoever calls the swarm (`appeal`, `callSwarm`, the doer's mandatory
+///         swarm questions are paid by whoever calls the swarm (`appeal`, `callSwarm`; no mandatory
 ///         check); prepaid questions are asked lazily by the same machine. The treasury pays for nothing.
 contract TaskVault {
     using SafeERC20 for IERC20;
@@ -50,8 +70,10 @@ contract TaskVault {
     /// @dev Gas that must remain after a failed Intake call: more than the rest of any caller needs, far less than
     ///      1/64 of what a real Intake request costs to starve.
     uint256 internal constant ASK_GAS_RESERVE = 150_000;
-    /// @dev gas forwarded to the self-call that advances timers inside `emergencyExit`.
-    uint256 private constant EMERGENCY_ADVANCE_GAS = 2_500_000;
+    /// @dev Gas forwarded to the buyback wallet's ETH receive: a wallet that reverts or
+    ///      burns gas must not be able to freeze the whole payout by eating the rest of the transaction's gas; this
+    ///      is far more than a plain `receive()` needs and far less than it takes to starve the caller.
+    uint256 private constant BURN_SEND_GAS = 30_000;
     uint256 private constant ROUTE_VIEW = 1;
     uint256 private constant ROUTE_CALL = 2;
     uint256 private constant ROUTE_PAYABLE = 3;
@@ -73,6 +95,9 @@ contract TaskVault {
     TextRules public immutable textRules;
     address public immutable caseDesk;
     address public immutable disputeDesk;
+    /// @notice BuybackBurner: $YOLO burn shares wait here for anyone's `burnYolo`. ETH, USDC and IMD burn shares
+    ///         are sent straight to its buyback wallet at payout; this is only the fallback when that send fails.
+    address public immutable burner;
 
     // tasks
     uint256 public taskCount;
@@ -87,8 +112,10 @@ contract TaskVault {
     mapping(address => uint256) public treasuryPot; // token => amount owed to the project treasury
     mapping(bytes32 => SwarmRequest) internal _requests;
     mapping(bytes32 => AskedVia) internal _askedVia;
-    /// @notice When the withdrawal of an active share that `who` announced on an open task may happen (0 = none).
-    mapping(uint256 => mapping(address => uint64)) public withdrawNoticeAt;
+    /// @notice The YoloSweetener of this vault (launch 3), bound once by the registry owner (`bindSweetener`). Its
+    ///         $YOLO add-on is paid with the reward; the stake bonus
+    ///         share is paid on it too, but the power is measured against the author's reward only. Until it is bound no add-on exists (the sweetener refuses deposits).
+    address public sweetener;
 
     bool private transient _entered;
 
@@ -105,11 +132,14 @@ contract TaskVault {
         address attestationChecker_,
         address textRules_,
         address caseDesk_,
-        address disputeDesk_
+        address disputeDesk_,
+        address burner_
     ) {
         if (registry_ == address(0) || imd_ == address(0) || usdc_ == address(0) || yolo_ == address(0)) {
             revert BadCurrency();
         }
+        if (burner_.code.length == 0) revert WrongWiring();
+        burner = burner_;
         registry = registry_;
         imd = IERC20(imd_);
         usdc = IERC20(usdc_);
@@ -121,6 +151,15 @@ contract TaskVault {
         disputeDesk = disputeDesk_;
         IDeskWiring(caseDesk_).wire(registry_, imd_, usdc_, caseDesk_, disputeDesk_);
         IDeskWiring(disputeDesk_).wire(registry_, imd_, usdc_, caseDesk_, disputeDesk_);
+    }
+
+    /// @notice Bind this vault's YoloSweetener, once (the registry owner; the sweetener must name this vault).
+    ///         Nothing can move or freeze money through it: it only lets the add-on count with the reward.
+    function bindSweetener(address s) external {
+        if (msg.sender != ParamsRegistry(registry).owner()) revert NotAuthorized();
+        if (sweetener != address(0) || IAddon(s).vault() != address(this)) revert WrongWiring();
+        sweetener = s;
+        emit SweetenerBound(s);
     }
 
     modifier nonReentrant() {
@@ -165,7 +204,7 @@ contract TaskVault {
 
     function _route(bytes4 sig) private view returns (address, uint256) {
         if (sig == ITaskVault.submit.selector) return (caseDesk, ROUTE_PAYABLE);
-        if (sig == ITaskVault.claimVoidSubmission.selector || sig == ITaskVault.reply.selector) {
+        if (sig == ITaskVault.claimVoidSubmission.selector) {
             return (caseDesk, ROUTE_CALL);
         }
         if (
@@ -179,18 +218,20 @@ contract TaskVault {
                 || sig == ITaskVault.callSwarm.selector
         ) return (disputeDesk, ROUTE_PAYABLE);
         if (
-            sig == ITaskVault.submitVotes.selector || sig == ITaskVault.appealReply.selector
-                || sig == ITaskVault.claimDisputer.selector || sig == ITaskVault.claimVoterReward.selector
-                || sig == ITaskVault.claimRelayerShortfall.selector
+            sig == ITaskVault.vote.selector || sig == ITaskVault.claimDisputer.selector
+                || sig == ITaskVault.claimVoterReward.selector || sig == ITaskVault.claimVoterRewards.selector
+                || sig == ITaskVault.askAppealSwarm.selector
         ) return (disputeDesk, ROUTE_CALL);
         if (
             sig == ITaskVault.getDispute.selector || sig == ITaskVault.getDisputer.selector
                 || sig == ITaskVault.getAppeal.selector || sig == ITaskVault.getSettlement.selector
                 || sig == ITaskVault.votesOf.selector || sig == ITaskVault.voterClaimed.selector
-                || sig == ITaskVault.tokensVoted.selector || sig == ITaskVault.tokenVoted.selector
-                || sig == ITaskVault.relayerShortfall.selector || sig == ITaskVault.voteDomainSeparator.selector
-                || sig == ITaskVault.quoteDisputeBond.selector || sig == ITaskVault.quoteSwarmFee.selector
+                || sig == ITaskVault.hasVoted.selector || sig == ITaskVault.votePower.selector
+                || sig == ITaskVault.tokenVoted.selector || sig == ITaskVault.sideOf.selector
         ) return (disputeDesk, ROUTE_VIEW);
+        if (sig == ITaskVault.quoteDisputeBond.selector || sig == ITaskVault.quoteSwarmFee.selector) {
+            return (caseDesk, ROUTE_VIEW);
+        }
 
         if (sig == ITaskVault.paramsOf.selector) return (registry, ROUTE_VIEW);
         return (address(0), 0);
@@ -198,10 +239,12 @@ contract TaskVault {
 
     // ================================================================== tasks
 
-    /// @notice Create a task under the current parameter version. msg.value covers `authorFee` (non-refundable, to
-    ///         the treasury) + the reward for ETH tasks + ETH swapped in mode A (IMD tasks). Excess ETH is refunded.
-    ///         `title` (1..MAX_TITLE_BYTES, only in TaskCreated, never sent to the swarm); `condition` (what to do and
-    ///         how to prove it: stored, the swarm's TASK); `category` (< CATEGORY_COUNT) and `proofType`
+    /// @notice Create a task under the current parameter version. No creation fee. msg.value
+    ///         covers the reward for ETH tasks + ETH swapped in mode A (IMD tasks). Excess ETH is refunded.
+    ///         `deadline` is required and never changes. The reward is worth at least the currency's own minimum (`minRewardUsdc`/`minRewardEth`/`minRewardImd`/`minRewardYolo`, no USD
+    ///         conversion); no upper limit on one task's reward or on all open tasks together.
+    ///         `title` (1..MAX_TITLE_BYTES, only in TaskCreated, never sent to the swarm); `rules` (TaskRules: TASK,
+    ///         PROOF and NO texts, each 1..maxTextBytes, stored, each one swarm definition); `category` (< CATEGORY_COUNT) and `proofType`
     ///         (< PROOF_TYPE_COUNT: what every proofUri must be) are stored; `cover` (empty, `ipfs://…` or `https://…`,
     ///         at most MAX_COVER_BYTES) is only emitted in TaskCreated. None of them can change later.
     function createTask(
@@ -209,11 +252,10 @@ contract TaskVault {
         uint256 amount,
         uint64 deadline,
         string calldata title,
-        string calldata condition,
+        TaskRules calldata rules,
         uint8 category,
         uint8 proofType,
         string calldata cover,
-        uint256 authorFee,
         ImdPay calldata payIn
     ) external payable nonReentrant returns (uint256 taskId) {
         ParamsRegistry reg = ParamsRegistry(registry);
@@ -221,7 +263,7 @@ contract TaskVault {
         if (currency != ETH && currency != address(usdc) && currency != address(imd) && currency != address(yolo)) {
             revert BadCurrency();
         }
-        if (deadline != 0 && deadline <= block.timestamp) revert BadDeadline();
+        if (deadline <= block.timestamp) revert BadDeadline();
         uint32 version = reg.currentVersion();
         if (version != _lastVersion) {
             _lastVersion = version;
@@ -230,22 +272,16 @@ contract TaskVault {
         ParamsCore memory p = reg.core(version);
         TextRules text = textRules;
         if (!text.validText(title, MAX_TITLE_BYTES)) revert BadTitle();
-        if (!text.validText(condition, p.maxTextBytes)) revert BadText();
+        uint256 maxText = p.maxTextBytes;
+        if (
+            !text.validText(rules.task, maxText) || !text.validText(rules.proof, maxText)
+                || !text.validText(rules.noIf, maxText)
+        ) revert BadText();
         if (category >= CATEGORY_COUNT) revert BadCategory();
         if (proofType >= PROOF_TYPE_COUNT) revert BadProofType();
         text.checkCover(cover);
-        if (authorFee < p.minAuthorFee) revert FeeTooLow();
         if (amount == 0 || amount > type(uint128).max) revert BadAmount();
-        if (currency == address(imd)) {
-            if (amount < p.minRewardImd) revert RewardTooSmall();
-        } else {
-            IPriceOracle o = IPriceOracle(p.priceOracle);
-            // $YOLO without a reliable price yet has no USD minimum (the author fee is the spam guard); every
-            // submission to it then counts as large: the mandatory check and bonds at the large threshold (Desk)
-            if ((currency != address(yolo) || o.hasPrice(currency)) && o.usdValue(currency, amount) < p.minRewardUsd) {
-                revert RewardTooSmall();
-            }
-        }
+        if (amount < _minReward(p, currency)) revert RewardTooSmall();
 
         taskId = ++taskCount;
         Task storage t = _tasks[taskId];
@@ -256,125 +292,86 @@ contract TaskVault {
         t.currency = currency;
         t.category = category;
         t.proofType = proofType;
-        t.condition = condition;
+        t.createdAt = uint64(block.timestamp);
+        // 1 keccak256(abi.encode(...)) instead of 3 SSTORE strings; the texts stay in
+        // this call's calldata and TaskCreated below. abi.encode, not concat, so field boundaries cannot shift.
+        t.rulesHash = keccak256(abi.encode(rules.task, rules.proof, rules.noIf));
         t.pot = amount;
         Contribution storage ct = _contributions[taskId][msg.sender];
         ct.active = uint128(amount);
         ct.ever = true;
 
-        uint256 ethNeeded = authorFee + _collect(msg.sender, msg.value, currency, amount, p.swapAdapter, payIn);
-        treasuryPot[ETH] += authorFee;
-        liabilities[ETH] += authorFee;
+        uint256 ethNeeded = _collect(msg.sender, msg.value, currency, amount, p.swapAdapter, payIn);
         _settleValue(msg.sender, msg.value, ethNeeded);
-        emit TaskCreated(taskId, msg.sender, currency, amount, deadline, title, condition, category, proofType, cover);
+        emit TaskCreated(taskId, msg.sender, currency, amount, deadline, title, rules, category, proofType, cover);
     }
 
-    /// @notice Add to a task's reward (same currency). While a submission is active the top-up waits for the next
-    ///         round (refunded if that submission is accepted).
+    /// @notice Add to a task's reward (same currency), locked like the rest until the deadline. A top-up made while
+    ///         a submission is being checked joins the reward at once too (like the $YOLO
+    ///         add-on): if that submission is accepted, its doer gets it with the rest of the pot. The doer's bond
+    ///         stays based on the author's own reward. A decided task takes nothing (`TaskNotOpen`).
     function topUp(uint256 taskId, uint256 amount, ImdPay calldata payIn) external payable nonReentrant {
         _advance(taskId);
         Task storage t = _tasks[taskId];
         if (t.status != TaskStatus.Open) revert TaskNotOpen();
-        if (t.deadline != 0 && block.timestamp >= t.deadline) revert DeadlinePassed();
+        if (block.timestamp >= t.deadline) revert DeadlinePassed();
         if (amount == 0 || amount > type(uint128).max) revert BadAmount();
+        ParamsCore memory p = ParamsRegistry(registry).core(t.paramsVersion);
 
-        Contribution storage c = _syncContribution(taskId, msg.sender);
+        Contribution storage c = _contributions[taskId][msg.sender];
         c.ever = true;
-        bool pending = t.activeSub != 0;
-        if (pending) {
-            c.pending += uint128(amount);
-            c.pendingEpoch = t.busyEpoch;
-            t.pending += amount;
-        } else {
-            c.active += uint128(amount);
-            t.pot += amount;
-        }
-        address adapter = ParamsRegistry(registry).core(t.paramsVersion).swapAdapter;
+        c.active += uint128(amount);
+        t.pot += amount;
         // no contributor fee
-        _settleValue(msg.sender, msg.value, _collect(msg.sender, msg.value, t.currency, amount, adapter, payIn));
-        emit ToppedUp(taskId, msg.sender, amount, pending);
+        _settleValue(msg.sender, msg.value, _collect(msg.sender, msg.value, t.currency, amount, p.swapAdapter, payIn));
+        emit ToppedUp(taskId, msg.sender, amount, t.activeSub != 0);
     }
 
-    /// @notice Announce taking back your active share of an open task: `withdrawContribution` may take it from
-    ///         WITHDRAW_NOTICE (1 h) after this call for WITHDRAW_NOTICE_VALID (1 day), while no submission is active.
-    ///         A doer sees the reward leaving before he submits (swarm audit #8). Reverts while a submission is
-    ///         active, or while an earlier notice is still live: a standing notice cannot be renewed every 25 h into
-    ///         an always-due one, so a doer always sees a real gap before a fresh notice starts (audit round 2,
-    ///         finding 16).
-    function announceWithdraw(uint256 taskId) external nonReentrant {
-        _advance(taskId);
-        Task storage t = _tasks[taskId];
-        if (t.status != TaskStatus.Open) revert TaskNotOpen();
-        if (t.activeSub != 0) revert SubmissionActive();
-        uint64 existing = withdrawNoticeAt[taskId][msg.sender];
-        if (existing != 0 && block.timestamp <= existing + WITHDRAW_NOTICE_VALID) revert NoticeLive(existing);
-        Contribution storage c = _syncContribution(taskId, msg.sender);
-        if (c.active == 0) revert NothingToClaim();
-        uint64 at = uint64(block.timestamp + WITHDRAW_NOTICE);
-        withdrawNoticeAt[taskId][msg.sender] = at;
-        emit WithdrawAnnounced(taskId, msg.sender, c.active, at);
-    }
-
-    /// @notice Take back your share: pending top-ups at any time; the active share of an open task while no
-    ///         submission is active, once your notice is due (`announceWithdraw`); everything after expiry or
-    ///         emergency exit; pending top-ups after acceptance.
+    /// @notice Take back your share once the reward is unlocked: everything after expiry or a cancellation
+    ///         by the dev wallet (`cancelTask`); nothing after an acceptance (the whole pot went to the doer). While
+    ///         the task is open nothing leaves, before or after its deadline: a doer may be
+    ///         working on it.
     function withdrawContribution(uint256 taskId) external nonReentrant {
         _advance(taskId);
         Task storage t = _tasks[taskId];
-        Contribution storage c = _syncContribution(taskId, msg.sender);
-        uint256 fromPending = c.pending;
-        uint256 fromActive;
+        Contribution storage c = _contributions[taskId][msg.sender];
         TaskStatus st = t.status;
-        if (st == TaskStatus.Expired || st == TaskStatus.Unwound) {
-            fromActive = c.active;
-        } else if (st == TaskStatus.Open && t.activeSub == 0 && c.active != 0) {
-            uint256 at = withdrawNoticeAt[taskId][msg.sender];
-            if (at != 0 && block.timestamp >= at && block.timestamp <= at + WITHDRAW_NOTICE_VALID) {
-                fromActive = c.active;
-            } else if (fromPending == 0) {
-                if (at == 0 || block.timestamp > at + WITHDRAW_NOTICE_VALID) revert NoNotice();
-                revert NoticeNotDue(uint64(at));
-            }
-        }
-        uint256 amount = fromPending + fromActive;
+        if (st == TaskStatus.Open) revert TaskNotOpen();
+        uint256 amount = st == TaskStatus.Completed ? 0 : c.active;
         if (amount == 0) revert NothingToClaim();
-        if (fromActive != 0 && withdrawNoticeAt[taskId][msg.sender] != 0) delete withdrawNoticeAt[taskId][msg.sender];
-        c.pending = 0;
-        c.active -= uint128(fromActive);
-        t.pending -= fromPending;
-        t.pot -= fromActive;
+        c.active -= uint128(amount);
+        t.pot -= amount;
         emit ContributionWithdrawn(taskId, msg.sender, amount);
         _pay(t.currency, msg.sender, amount);
     }
 
-    // ================================================================== timers and emergency
+    // ================================================================== timers and cancellation
 
-    /// @notice Play the expired timers of a task (anyone; every task call does this first). Also asks a prepaid
-    ///         appeal question once its reply window is over.
+    /// @notice Play the expired timers of a task (anyone; every task call does this first). A prepaid appeal
+    ///         question is asked by `askAppealSwarm`, which carries the resupplied texts.
     function poke(uint256 taskId) external nonReentrant {
         _advance(taskId);
     }
 
-    /// @notice If the active submission's current step is still open `emergencyDelay` (30d) after its timer
-    ///         expired, anyone can unwind the task: everyone takes back what he put in (minus what was already
-    ///         paid to the swarm or to relayers), no fees. Timers are advanced first in a gas-bounded self-call, so
-    ///         a working state machine always wins over the exit; a reverting one cannot block it.
-    function emergencyExit(uint256 taskId) external nonReentrant {
-        if (gasleft() < EMERGENCY_ADVANCE_GAS + 500_000) revert InsufficientGas();
-        try this.advanceFromSelf{gas: EMERGENCY_ADVANCE_GAS}(taskId) {} catch {}
+    /// @notice Cancel a task: only the dev wallet, the owner of the
+    ///         DevPrices of the task's parameter version (the wallet that sets the prices), and only while the task
+    ///         is still open after its timers are played, i.e. before its final payout. The task becomes Unwound and
+    ///         everyone takes back exactly what they put in, each with their own call: the reward and top-ups with
+    ///         `withdrawContribution`, the doer's bond and an appellant's bond and unspent prepayment as credits,
+    ///         disputers with `claimDisputer`, queued doers with `claimVoidSubmission`, $YOLO add-ons with
+    ///         `YoloSweetener.withdraw`, YOLO Predict positions in full with `YoloPredict.claim`. The dev wallet gets
+    ///         nothing in any outcome; swarm fees already paid to the Intake are gone and come back to nobody.
+    function cancelTask(uint256 taskId) external nonReentrant {
         Task storage t = _tasks[taskId];
-        uint256 subId = t.activeSub;
-        if (t.status != TaskStatus.Open || subId == 0) revert NotStuck();
-        ICaseDesk cases = ICaseDesk(caseDesk);
-        uint256 delay = ParamsRegistry(registry).core(t.paramsVersion).emergencyDelay;
-        if (block.timestamp < cases.stepDeadline(subId) + delay) revert NotStuck();
-        cases.finalize(subId, Outcome.Unwound);
-    }
-
-    /// @dev Used by emergencyExit only, through a gas-bounded self-call that may revert.
-    function advanceFromSelf(uint256 taskId) external {
-        if (msg.sender != address(this)) revert OnlySelf();
+        if (t.author == address(0)) revert TaskNotOpen();
+        address dev = Ownable(ParamsRegistry(registry).core(t.paramsVersion).devPrices).owner();
+        if (msg.sender != dev) revert NotAuthorized();
         _advance(taskId);
+        if (t.status != TaskStatus.Open) revert TaskNotOpen();
+        uint256 subId = t.activeSub;
+        if (subId != 0) ICaseDesk(caseDesk).unwind(subId); // closeSubmission(Unwound) closes the task
+        else _close(taskId, t, TaskStatus.Unwound);
+        emit TaskCancelled(taskId, msg.sender);
     }
 
     // ================================================================== tasks for the desks
@@ -392,6 +389,13 @@ contract TaskVault {
         return _tasks[taskId].status;
     }
 
+    /// @notice The reward in play of a task: what an accepted doer gets before the fee (CaseDesk._finalize).
+    function potOf(uint256 taskId) external view returns (uint256) {
+        return _tasks[taskId].pot;
+    }
+
+    /// @dev `doer` is not read: no field of `SubmitTerms` depends on it
+    ///      (the doer stake bonus does not exclude a doer who contributed to the task).
     function submitTerms(uint256 taskId, address doer) external view returns (SubmitTerms memory r) {
         Task storage t = _tasks[taskId];
         r.status = t.status;
@@ -399,11 +403,19 @@ contract TaskVault {
         r.version = t.paramsVersion;
         r.currency = t.currency;
         r.proofType = t.proofType;
-        r.rejectedCount = t.rejectedCount;
         r.busy = t.activeSub != 0;
-        r.ahead = (r.busy ? 1 : 0) + (t.queueTail - t.queueHead);
         r.pot = t.pot;
-        r.doerEver = _contributions[taskId][doer].ever;
+        // the author's own share of the pot (their top-ups included): the base of the bonds
+        r.base = _contributions[taskId][t.author].active;
+        r.addon = _addon(taskId);
+        doer;
+    }
+
+    /// @dev The task's $YOLO add-on; 0 while no sweetener is bound.
+    function _addon(uint256 taskId) private view returns (uint256) {
+        address s = sweetener;
+        if (s == address(0)) return 0;
+        return IAddon(s).bonusOf(taskId);
     }
 
     /// @notice A new submission joins its task: active at once, or queued behind the active one.
@@ -414,27 +426,23 @@ contract TaskVault {
     }
 
     /// @notice The task side of a final submission: completion, unwind, or the next queued submission (returned for
-    ///         the case desk to activate, 0 = none) / the merge of pending top-ups when the busy period ends.
+    ///         the case desk to activate, 0 = none). `reward` is the whole pot on an acceptance (CaseDesk._finalize).
     function closeSubmission(uint256 taskId, Outcome o, uint256 reward) external onlyDesk returns (uint256 next) {
         Task storage t = _tasks[taskId];
-        t.activeSub = 0;
         if (o == Outcome.Accepted) {
+            // activeSub stays: on a Completed task it names the accepted submission (YoloPredict, YoloSweetener)
             t.pot -= reward;
-            t.status = TaskStatus.Completed;
-            emit TaskStatusChanged(taskId, TaskStatus.Completed);
-        } else if (o == Outcome.Unwound) {
-            t.status = TaskStatus.Unwound;
-            emit TaskStatusChanged(taskId, TaskStatus.Unwound);
+            _close(taskId, t, TaskStatus.Completed);
+            return 0;
+        }
+        t.activeSub = 0;
+        if (o == Outcome.Unwound) {
+            _close(taskId, t, TaskStatus.Unwound);
         } else {
             ++t.rejectedCount;
             if (t.queueHead < t.queueTail) {
                 next = _queue[taskId][t.queueHead++];
                 t.activeSub = uint64(next);
-            } else {
-                // busy period over: pending top-ups join the pot
-                t.pot += t.pending;
-                t.pending = 0;
-                ++t.busyEpoch;
             }
         }
     }
@@ -446,7 +454,7 @@ contract TaskVault {
     ///         design). Records a verified answer; never reverts on unknown, foreign, duplicate or invalid input.
     ///         Not nonReentrant on purpose: it makes no external call except the attestation check (a view of
     ///         the AttestationChecker and the registry), and the Intake must always be able to deliver.
-    ///         The only way an answer reaches the vault (audit B-01: no public fallback). A callback
+    ///         The only way an answer reaches the vault (no public fallback). A callback
     ///         that is never delivered is silence: the swarm timeout, or the Intake reporting the request completed
     ///         without a recorded answer (CaseDesk._swarmStatus).
     function onOracleResult(bytes32 requestId, OracleAttestation.Attestation calldata a, bytes calldata signature)
@@ -528,11 +536,25 @@ contract TaskVault {
         return _collectImd(from, msgValue, needed, adapter, payIn);
     }
 
-    /// @notice ETH from the user's msg.value booked in: an author fee (to the treasury pot) or a dispute fee (the
-    ///         dispute pot, kept by the DisputeDesk).
-    function bookEth(uint256 amount, bool toTreasury) external onlyDesk {
-        liabilities[ETH] += amount;
-        if (toTreasury) treasuryPot[ETH] += amount;
+    /// @notice Books `amount` of `currency` from `from` for a bond's "rew" or "add" part: ETH from msg.value, IMD or
+    ///         any other token by plain transferFrom. No swap, no oracle.
+    function collectBondPart(address from, uint256 msgValue, address currency, uint256 amount)
+        external
+        onlyDesk
+        returns (uint256 ethNeeded)
+    {
+        if (amount == 0) return 0;
+        if (currency == ETH) {
+            liabilities[ETH] += amount;
+            return amount;
+        }
+        if (currency == address(imd)) {
+            ImdPay memory noSwap;
+            return _collectImd(from, msgValue, amount, address(0), noSwap);
+        }
+        IERC20(currency).safeTransferFrom(from, address(this), amount);
+        liabilities[currency] += amount;
+        return 0;
     }
 
     /// @notice msg.value must cover `ethNeeded`; the excess is returned to the payer.
@@ -550,9 +572,16 @@ contract TaskVault {
         _pay(token, to, amount);
     }
 
-    /// @notice Bucket -> treasury pot. Liabilities unchanged.
+    /// @notice Bucket -> treasury pot. Liabilities unchanged. $YOLO goes to the burner instead: it waits there for the "Burn" button, BuybackBurner.burnYolo.
     function addTreasury(address token, uint256 amount) external onlyDesk {
-        treasuryPot[token] += amount;
+        if (token == address(yolo)) _burn(token, amount);
+        else treasuryPot[token] += amount;
+    }
+
+    /// @notice Bucket -> burn: $YOLO to the BuybackBurner (it waits there for anyone's `burnYolo`); ETH, USDC and
+    ///         IMD straight to the buyback wallet, or to the BuybackBurner for its `forward` if that send fails.
+    function burn(address token, uint256 amount) external onlyDesk {
+        _burn(token, amount);
     }
 
     /// @notice Pays the Intake `price` IMD (already booked in one of the submission's buckets) and records the
@@ -578,10 +607,10 @@ contract TaskVault {
         imd_.forceApprove(intake, 0);
         spent = balBefore - imd_.balanceOf(address(this));
         if (spent > price || (ok && (rid == bytes32(0) || _requests[rid].subId != 0)) || (!ok && spent != 0)) {
-            revert UnknownRequest(); // an Intake breaking its own interface: only the emergency exit helps
+            revert UnknownRequest(); // an Intake breaking its own interface: only a cancellation (cancelTask) helps
         }
         // a failure caused by a gas limit set just low enough to starve the Intake call must not count as the
-        // Intake failing (that would skip a mandatory check or void an appeal): revert the whole transaction
+        // Intake failing (that would void an appeal or a call of the swarm): revert the whole transaction
         if (!ok && gasleft() < ASK_GAS_RESERVE) revert InsufficientGas();
         if (!ok) return (false, 0, bytes32(0));
         liabilities[address(imd_)] -= spent;
@@ -609,23 +638,44 @@ contract TaskVault {
             if (t.status != TaskStatus.Open) return;
             uint256 subId = t.activeSub;
             if (subId == 0) {
-                if (t.deadline != 0 && block.timestamp >= t.deadline) {
-                    t.status = TaskStatus.Expired;
-                    emit TaskStatusChanged(taskId, TaskStatus.Expired);
-                }
+                if (block.timestamp >= t.deadline) _close(taskId, t, TaskStatus.Expired);
                 return;
             }
             if (!ICaseDesk(caseDesk).step(subId)) return;
         }
     }
 
-    /// @dev Pending top-ups from an ended busy period become active shares (the pot already includes them).
-    function _syncContribution(uint256 taskId, address who) private returns (Contribution storage c) {
-        c = _contributions[taskId][who];
-        if (c.pending != 0 && c.pendingEpoch < _tasks[taskId].busyEpoch) {
-            c.active += c.pending;
-            c.pending = 0;
+    function _close(uint256 taskId, Task storage t, TaskStatus st) private {
+        t.status = st;
+        emit TaskStatusChanged(taskId, st);
+    }
+
+    /// @dev The smallest reward of a new task, in its own currency: no USD conversion, no
+    ///      oracle, no upper limit.
+    function _minReward(ParamsCore memory p, address currency) private view returns (uint256) {
+        if (currency == ETH) return p.minRewardEth;
+        if (currency == address(usdc)) return p.minRewardUsdc;
+        if (currency == address(imd)) return p.minRewardImd;
+        return p.minRewardYolo;
+    }
+
+    /// @dev $YOLO always goes to the burner (it only burns from there). ETH, USDC and IMD try the
+    ///      buyback wallet directly, in this same transaction; a revert there (no `receive`) must not sink the
+    ///      payout, so it falls back to the burner, where `forward` can retry later.
+    function _burn(address token, uint256 amount) private {
+        if (amount == 0) return;
+        if (token == address(yolo)) {
+            _pay(token, burner, amount);
+        } else {
+            address wallet = IBurnerWallet(burner).buybackWallet();
+            if (_trySend(token, wallet, amount, BURN_SEND_GAS)) {
+                liabilities[token] -= amount;
+                emit Paid(token, wallet, amount);
+            } else {
+                _pay(token, burner, amount);
+            }
         }
+        emit Burned(token, amount);
     }
 
     /// @dev Books `amount` of a task currency from `from`. Returns the ETH it needs from the user's msg.value.
@@ -664,6 +714,7 @@ contract TaskVault {
     }
 
     function _withdrawTo(address token, address to) private {
+        if (to == address(0)) revert WithdrawToZero();
         uint256 amount = credits[token][msg.sender];
         if (amount == 0) revert NothingToClaim();
         credits[token][msg.sender] = 0;
@@ -688,8 +739,14 @@ contract TaskVault {
     }
 
     function _trySend(address token, address to, uint256 amount) private returns (bool ok) {
+        return _trySend(token, to, amount, gasleft());
+    }
+
+    /// @dev `ethGas` caps only the ETH branch (an ERC20 `transfer` runs the token's own code, not the recipient's,
+    ///      so it cannot grief the caller the same way).
+    function _trySend(address token, address to, uint256 amount, uint256 ethGas) private returns (bool ok) {
         if (token == ETH) {
-            (ok,) = to.call{value: amount}("");
+            (ok,) = to.call{value: amount, gas: ethGas}("");
             return ok;
         }
         bytes memory ret;
@@ -700,7 +757,7 @@ contract TaskVault {
     /// @dev Books exactly `needed` IMD from `from`: mode B transferFrom, or mode A swap through the adapter
     ///      (exact input, user minOut / deadline, measured by balance difference, surplus returned).
     ///      Returns the ETH it needs from msg.value.
-    function _collectImd(address from, uint256 msgValue, uint256 needed, address adapter, ImdPay calldata payIn)
+    function _collectImd(address from, uint256 msgValue, uint256 needed, address adapter, ImdPay memory payIn)
         private
         returns (uint256 ethNeeded)
     {

@@ -5,12 +5,12 @@ import {ProjectVesting} from "./ProjectVesting.sol";
 
 /// @notice The four $YOLO vestings of launch 0, each a ProjectVesting with its schedule compiled in (one address
 ///         argument, nothing to get wrong in the launch text). 12 months = 365 days, 24 months = 730 days; every clock
-///         starts when the $YOLO arrives (YoloSplitter.split, ProjectVesting `startOf`; audit A-03), no cliff
-///         anywhere. The schedules are those of docs/TOKENOMICS.md.
+///         starts when the $YOLO arrives (YoloSplitter.split, ProjectVesting `startOf`), no cliff
+///         anywhere.
 
-/// @title IncentivesVesting: 25% of the supply (250,000,000 YOLO) for project-run incentives
-/// @notice A quarter at once (62,500,000 YOLO), the rest linear over 24 months from the split. The project wallet
-///         spends it on tasks, leaderboards and the like, off chain; this contract only unlocks it.
+/// @title IncentivesVesting: 25% of the supply (250,000,000 YOLO) for the incentives wallet
+/// @notice A quarter at once (62,500,000 YOLO), the rest linear over 24 months from the split. The incentives wallet
+///         is a plain wallet: no mechanic of the protocol pays from it; this contract only unlocks it.
 contract IncentivesVesting is ProjectVesting {
     uint256 public constant AT_ONCE = 62_500_000e18;
 

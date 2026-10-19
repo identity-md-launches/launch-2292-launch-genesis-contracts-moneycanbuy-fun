@@ -2,8 +2,8 @@
 pragma solidity ^0.8.28;
 
 /// @notice IMD Intake (swarm oracle payment entry point), Ethereum mainnet: version 2
-///         0xa43e6f75ee006411f79ac1c84120606c2330de82 (used at launch; the swarm reference says "use version 2 for
-///         anything new", it keeps every function, event and getter of version 1), version 1
+///         0xa43e6f75ee006411f79ac1c84120606c2330de82 (the launch's; it keeps every function, event and getter of
+///         version 1), version 1
 ///         0x1397434cd35e8a9c8ac312a61d3a285eb31dea56 still served (source verified on Sourcify/Blockscout, selectors
 ///         checked against the bytecode). Only the version 1 functions are used here. `action` is the right-padded ASCII bytes32 of
 ///         "oracle.request(at)oracle-1". `request` is payable but must get msg.value == 0 for ERC-20 payment.
@@ -22,7 +22,7 @@ interface IIntake {
         external
         returns (bytes32 requestId);
 
-    /// @notice Live price of `action` paid in `asset`. The Intake owner can change it at any time.
+    /// @notice Live price of `action` paid in `asset`. The Intake price may differ at call time.
     function priceOf(bytes32 action, address asset) external view returns (uint256);
 
     /// @notice Stored request; `completed` turns true when the writer called `complete` (any status).

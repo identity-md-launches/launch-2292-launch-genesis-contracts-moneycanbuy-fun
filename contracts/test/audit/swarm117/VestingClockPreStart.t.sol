@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-// Swarm audit of this repository at d9a1ee5, finding #2: the report's PoC, unchanged except this header. It failed
-// on d9a1ee5 ("clock must start at the split: 1 != 2592001") and passes since only the YoloSplitter starts a clock.
+// Swarm audit 117cf05a, finding #2: the report's PoC, unchanged except this header. It fails on d9a1ee5 ("clock must
+// start at the split: 1 != 2592001"); here only the YoloSplitter starts a clock.
 
 import {Test} from "forge-std/Test.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
@@ -19,7 +19,7 @@ contract DustToken is ERC20 {
 }
 
 /// @notice docs/TOKENOMICS.md and docs/LAUNCH-TASK.md: "the vesting clocks start when the tokens arrive: the first
-///         split right after launch pays the at-once parts and starts every clock" (audit A-03). ProjectVesting.release
+///         split right after launch pays the at-once parts and starts every clock". ProjectVesting.release
 ///         starts the clock at the first call that finds ANY balance, by anyone. Between the token launch and the split
 ///         anybody can send 1 wei of YOLO to a vesting and call release: the clock then runs before the share arrives,
 ///         and the share vests pro rata to that head start the moment the split pays it.

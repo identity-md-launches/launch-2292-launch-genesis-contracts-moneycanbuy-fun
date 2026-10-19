@@ -8,7 +8,7 @@ import {FullMath} from "v4-core/src/libraries/FullMath.sol";
 
 import {LaunchPlan, LocalFactory, IContractFactory} from "../../script/LaunchPlan.sol";
 import {IProjectFactory} from "./LaunchRehearsal.fork.t.sol";
-import {Base} from "../Base.t.sol";
+import {Base, Ballot} from "../Base.t.sol";
 
 import {TaskVault} from "../../src/TaskVault.sol";
 import {YoloSweetener} from "../../src/YoloSweetener.sol";
@@ -20,9 +20,7 @@ import {DisputeDesk} from "../../src/desks/DisputeDesk.sol";
 import {TextRules} from "../../src/helpers/TextRules.sol";
 import {SwarmQuestionBuilder} from "../../src/helpers/SwarmQuestion.sol";
 import {AttestationChecker} from "../../src/helpers/AttestationChecker.sol";
-import {BallotChecker, Ballot} from "../../src/libraries/VoteLib.sol";
 import {UniswapV3SwapAdapter} from "../../src/adapters/UniswapV3SwapAdapter.sol";
-import {ChainlinkUniV3PriceOracle} from "../../src/oracles/ChainlinkUniV3PriceOracle.sol";
 import {YoloToken} from "../../src/token/YoloToken.sol";
 import {ProjectVesting} from "../../src/token/ProjectVesting.sol";
 import {NftGate} from "../../src/token/NftGate.sol";
@@ -41,14 +39,16 @@ abstract contract ReviewLaunchForkBase is Test {
     uint64 constant N1 = 4_000_000_301;
     uint64 constant N2 = 4_000_000_302;
     address constant TREASURY = address(0x7EA5);
-    address constant OWNER = TREASURY; // the project wallet: a single project key (EOA)
+    address constant OWNER = TREASURY; // the project wallet (no Safe)
     uint16 constant POOL_BPS = LaunchPlan.YOLO_POOL_BPS;
-    uint256 constant START_FDV_IMD = LaunchPlan.YOLO_OPENING_MCAP_IMD; // 15,000 IMD for 1B, as in the plan
+    uint256 constant START_FDV_IMD = 14_444e18;
+    uint256 constant OPEN_DELAY = 1 hours; // trading opens this long after launch 1
 
     LaunchPlan.Support internal s;
     LaunchPlan.Genesis internal g;
     address internal yolo;
     address internal deployer;
+    uint256 internal openAt;
 
     function _owners() internal pure returns (LaunchPlan.Owners memory) {
         return LaunchPlan.Owners(TREASURY, address(0x1CE7), address(0x57AB), address(0xDE7), address(0x7EA0));
@@ -69,6 +69,7 @@ abstract contract ReviewLaunchForkBase is Test {
         (bool ok0,) = address(FACTORY).call(_contractsData(N0, codes0, names0, e0));
         require(ok0, "launch 0 failed");
         g = g0;
+        openAt = vm.getBlockTimestamp() + OPEN_DELAY;
         bytes memory data;
         (data, s, yolo) = _launch1Data(N1);
         vm.prank(deployer);
@@ -82,23 +83,24 @@ abstract contract ReviewLaunchForkBase is Test {
         returns (bytes memory data, LaunchPlan.Support memory sup, address token)
     {
         (,, LaunchPlan.Genesis memory g0) = LaunchPlan.genesisLaunch(FACTORY, N0, _owners());
-        bytes memory tokenCode = LaunchPlan.yoloTokenCode(g0.gate, OWNER);
+        bytes memory tokenCode = LaunchPlan.yoloTokenCode(g0.gate, OWNER, openAt);
         token = FACTORY.predictToken(n, tokenCode);
         bytes[] memory codes;
         bytes32[] memory names;
         (codes, names, sup) =
             LaunchPlan.support(FACTORY, n, LaunchPlan.mainnet(OWNER, TREASURY), LaunchPlan.yoloPool(token));
-        address[] memory e = new address[](7);
+        address[] memory e = new address[](8);
         (e[0], e[1], e[2], e[3], e[4], e[5], e[6]) =
         (
-            sup.priceOracle,
+            sup.devPrices,
             sup.swapAdapter,
             sup.registry,
             sup.textRules,
             sup.questionBuilder,
-            sup.ballotChecker,
+            sup.votePower,
             sup.attestationChecker
         );
+        e[7] = sup.burner;
         IProjectFactory.CustomParams memory p;
         p.launchNumber = n;
         p.tokenCreationCode = tokenCode;

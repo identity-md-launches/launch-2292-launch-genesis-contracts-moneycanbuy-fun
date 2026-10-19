@@ -7,11 +7,11 @@ import {HiddenList} from "../src/HiddenList.sol";
 import {MockNFT} from "./mocks/MockNFT.sol";
 import {MockDelegateRegistry} from "./mocks/MockDelegateRegistry.sol";
 
-/// @dev Owner hides / unhides / keeps a batch; a non-owner reverts; ETH sent to it reverts and no function moves
-///      tokens; a vote counts for the owner and a delegate.xyz delegate, not for a stranger; a tokenId counts once
-///      per round; edges 9 vs 10 NFTs, 2 vs 3 wallets, a tie; the view before and after `roundEnd`; a new round
-///      before and after 7 days; `KEPT` blocks rounds; the owner overrides a vote result both ways; events carry
-///      vault/kind/id; gas report for every row of the gas table.
+/// @dev Owner hides / unhides / keeps a batch; a non-owner
+///      reverts; ETH sent to it reverts and no function moves tokens; a vote counts for the owner and a delegate.xyz
+///      delegate, not for a stranger; a tokenId counts once per round; edges 9 vs 10 NFTs, 2 vs 3 wallets, a tie;
+///      the view before and after `roundEnd`; a new round before and after 7 days; `KEPT` blocks rounds; the owner
+///      overrides a vote result both ways; events carry vault/kind/id; gas report for every row of the gas table.
 contract HiddenListTest is Test {
     HiddenList list;
     MockNFT nft;
@@ -379,17 +379,23 @@ contract HiddenListTest is Test {
 
     // ------------------------------------------------------------------ cooldown / retry
 
-    /// @notice Cooldown only bites a round someone actually defended (a keep vote landed); audit round 2, finding
-    ///         13b: an uncontested round (nobody watching, see `test_UncontestedFailedRoundRetriesAtOnce` below)
-    ///         must not get this cooldown, or one lone NFT could keep an item un-hideable forever by opening an
-    ///         empty round every 8 days.
+    /// @notice Cooldown only bites a round that actually reached hide quorum and still drew a keep vote (a genuine
+    ///         contest): an uncontested round (nobody watching, see
+    ///         `test_UncontestedFailedRoundRetriesAtOnce` below) must not get this cooldown, or one lone NFT could
+    ///         keep an item un-hideable forever by opening an empty round every 8 days. And
+    ///         requiring hide quorum too (not just any keep vote) closes the cheaper self-contest, see
+    ///         `test_SelfContestUnderQuorumDoesNotBlockHonestVoteNextDay` below.
     function test_FailedRoundCannotRetryBefore7Days() public {
-        address[] memory w = _holders(2); // short of quorum: round fails
-        _hideWith(w, 2);
-        address keeper = address(0xCAFE);
-        nft.mint(keeper, 999);
-        vm.prank(keeper);
-        list.vote(VAULT, KIND_TASK, 1, false, _ids1(999)); // contested: someone defended the item
+        address[] memory w = _holders(10); // reaches hide quorum
+        _hideWith(w, 10);
+        address[] memory keepers = new address[](10);
+        for (uint256 i; i < 10; ++i) {
+            address k = address(uint160(uint256(keccak256(abi.encode("keeper-7days", i)))));
+            keepers[i] = k;
+            nft.mint(k, 900 + i);
+            vm.prank(k);
+            list.vote(VAULT, KIND_TASK, 1, false, _ids1(900 + i)); // tie: contested, round fails despite quorum
+        }
         vm.warp(block.timestamp + ROUND_);
         (uint8 s,,,,) = list.status(VAULT, KIND_TASK, 1);
         assertEq(s, VISIBLE_);
@@ -403,7 +409,65 @@ contract HiddenListTest is Test {
         assertLt(roundEnd, block.timestamp); // no new round opened: the vote was a no-op
     }
 
-    /// @notice Audit round 2, finding 13b: an uncontested round (short of quorum, no keep vote at all, nobody
+    /// @notice A round counts as contested only if the hide side also reached quorum. Otherwise the round's
+    ///         own opener could cast a one-NFT keep vote from their second wallet and buy the full 7-day cooldown for 2 NFTs,
+    ///         blocking every genuine hide cluster that votes the next day. `HiddenList.sol` requires
+    ///         `hideNfts >= QUORUM_NFTS` alongside the keep vote before the cooldown starts.
+    function test_SelfContestUnderQuorumDoesNotBlockHonestVoteNextDay() public {
+        address defenderA = address(0xA11CE);
+        address defenderB = address(0xB0B);
+        nft.mint(defenderA, 1);
+        nft.mint(defenderB, 2);
+
+        vm.prank(defenderA);
+        list.vote(VAULT, KIND_TASK, 1, true, _ids1(1)); // opens a round: 1 hide NFT, far short of quorum
+        vm.prank(defenderB);
+        list.vote(VAULT, KIND_TASK, 1, false, _ids1(2)); // 1 keep NFT from the opener's own second wallet
+
+        (, uint32 hide0, uint32 keep0,, uint64 end0) = list.status(VAULT, KIND_TASK, 1);
+        assertEq(hide0, 1);
+        assertEq(keep0, 1);
+
+        vm.warp(end0 + 1); // the round failed: 1 vs 1, no quorum, no majority
+
+        address[] memory honest = _holders(10, 7); // a genuine 10-NFT/10-owner hide vote, the day after
+        _hideWith(honest, 10, 7);
+
+        (uint8 state, uint32 hide, uint32 keep,, uint64 end) = list.status(VAULT, KIND_TASK, 1);
+        assertEq(hide, 10, "a genuine hide vote counts right after a self-contested round");
+        assertEq(keep, 0);
+        assertGt(end, end0, "no new round opened");
+        vm.warp(end + 1);
+        (state,,,,) = list.status(VAULT, KIND_TASK, 1);
+        assertEq(state, HIDDEN_BY_VOTE_, "item not hidden by vote");
+    }
+
+    /// @notice The self-contest above is repeatable every 8 days (2 NFTs, 2 transactions, no owner
+    ///         involvement); an honest vote placed inside the window still counts.
+    function test_SelfContestRepeatsEvery8DaysHonestVoteStillCounts() public {
+        address defenderA = address(0xA11CE);
+        address defenderB = address(0xB0B);
+        nft.mint(defenderA, 1);
+        nft.mint(defenderB, 2);
+
+        for (uint256 k; k < 3; ++k) {
+            vm.prank(defenderA);
+            list.vote(VAULT, KIND_TASK, 1, true, _ids1(1));
+            vm.prank(defenderB);
+            list.vote(VAULT, KIND_TASK, 1, false, _ids1(2));
+            (,,,, uint64 end) = list.status(VAULT, KIND_TASK, 1);
+            vm.warp(end + 2 days); // well before the cooldown ends
+
+            address[] memory honest = _holders(10, 100 + k);
+            _hideWith(honest, 10, 100 + k);
+            (, uint32 hide,,,) = list.status(VAULT, KIND_TASK, 1);
+            assertEq(hide, 10, "honest hide vote blocked");
+
+            vm.warp(end + COOLDOWN_ + 1); // the defender is back first, round 2
+        }
+    }
+
+    /// @notice An uncontested round (short of quorum, no keep vote at all, nobody
     ///         watching) starts no cooldown, so a griefer's lone NFT cannot keep an honest item un-hideable by
     ///         opening an empty round every 8 days; the very next hide vote opens a fresh round at once.
     function test_UncontestedFailedRoundRetriesAtOnce() public {
@@ -415,7 +479,7 @@ contract HiddenListTest is Test {
 
         address later = address(0xC0FFEE);
         nft.mint(later, 500);
-        vm.warp(block.timestamp + 1 hours); // well inside the old 7-day cooldown window
+        vm.warp(block.timestamp + 1 hours); // well before the cooldown ends
         vm.prank(later);
         list.vote(VAULT, KIND_TASK, 1, true, _ids1(500));
         (,,,, uint64 roundEnd) = list.status(VAULT, KIND_TASK, 1);
@@ -470,7 +534,7 @@ contract HiddenListTest is Test {
         assertEq(s, VISIBLE_);
     }
 
-    /// @notice Audit round 2, finding 13c: restoring `VISIBLE` over a round that had started also opens the 7-day
+    /// @notice Restoring `VISIBLE` over a round that had started also opens the 7-day
     ///         cooldown, so the cluster the owner just overruled cannot reopen a round on the item that same day.
     function test_OwnerRestoreVisibleStartsCooldown() public {
         address[] memory w = _holders(10);
@@ -551,7 +615,7 @@ contract HiddenListTest is Test {
         assertEq(sProof, HIDDEN_);
     }
 
-    // ------------------------------------------------------------------ gas report (DESIGN.md gas table)
+    // ------------------------------------------------------------------ gas report
 
     function test_GasOwnerHides1Item() public {
         HiddenList.Item[] memory items = new HiddenList.Item[](1);

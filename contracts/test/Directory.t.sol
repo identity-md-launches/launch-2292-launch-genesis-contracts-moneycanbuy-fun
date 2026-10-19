@@ -8,11 +8,11 @@ import {ProtocolDirectory} from "../src/ProtocolDirectory.sol";
 ///      current pointer only by the owner (the project wallet) after 48 h, nothing removed, old vaults keep working.
 contract DirectoryTest is Base {
     ProtocolDirectory internal dir;
-    address internal directoryOwner = makeAddr("directoryOwner");
+    address internal safe = makeAddr("safe");
 
     function setUp() public override {
         super.setUp();
-        dir = new ProtocolDirectory(directoryOwner, address(vault), address(sweetener), address(trophy), 7);
+        dir = new ProtocolDirectory(safe, address(vault), address(sweetener), address(trophy), 7);
     }
 
     function _v(address v, address s, address t, string memory label)
@@ -33,7 +33,7 @@ contract DirectoryTest is Base {
     }
 
     function test_Version1FromConstructor() public view {
-        assertEq(dir.safe(), directoryOwner);
+        assertEq(dir.safe(), safe);
         assertEq(dir.versionCount(), 1);
         assertEq(dir.current(), 1);
         ProtocolDirectory.Version memory v = dir.version(1);
@@ -50,11 +50,11 @@ contract DirectoryTest is Base {
         vm.expectRevert(ProtocolDirectory.NotSafe.selector);
         new ProtocolDirectory(address(0), address(vault), address(0), address(0), 0);
         vm.expectRevert(abi.encodeWithSelector(ProtocolDirectory.NoCode.selector, alice));
-        new ProtocolDirectory(directoryOwner, alice, address(0), address(0), 0);
+        new ProtocolDirectory(safe, alice, address(0), address(0), 0);
         vm.expectRevert(abi.encodeWithSelector(ProtocolDirectory.NoCode.selector, bob));
-        new ProtocolDirectory(directoryOwner, address(vault), bob, address(0), 0);
+        new ProtocolDirectory(safe, address(vault), bob, address(0), 0);
         // a version without modules is fine
-        ProtocolDirectory bare = new ProtocolDirectory(directoryOwner, address(vault), address(0), address(0), 0);
+        ProtocolDirectory bare = new ProtocolDirectory(safe, address(vault), address(0), address(0), 0);
         assertEq(bare.version(1).sweetener, address(0));
     }
 
@@ -62,7 +62,7 @@ contract DirectoryTest is Base {
         uint256 t1 = _create(author, address(imd), 10e18); // a task in v1 before the switch
         (ITaskVault v2, YoloSweetener s2, DareTrophy t2) = _deployV2();
 
-        vm.startPrank(directoryOwner);
+        vm.startPrank(safe);
         dir.proposeVersion(_v(address(v2), address(s2), address(t2), "v2"));
         dir.proposeCurrent(2); // proposed together: v2 must be listed before the switch executes
         vm.stopPrank();
@@ -94,7 +94,7 @@ contract DirectoryTest is Base {
         vm.startPrank(author);
         imd.approve(address(v2), type(uint256).max);
         uint256 n2 = v2.createTask{value: 0.001 ether}(
-            address(imd), 10e18, 0, "Title", "ipfs://task-condition", 0, 0, "", 0.001 ether, _noSwap()
+            address(imd), 10e18, uint64(_now() + TTL), "Title", rulesOf("ipfs://task-condition"), 0, 0, "", _noSwap()
         );
         vm.stopPrank();
         assertEq(n2, 1);
@@ -115,7 +115,7 @@ contract DirectoryTest is Base {
         dir.proposeCurrent(1);
         vm.stopPrank();
 
-        vm.startPrank(directoryOwner);
+        vm.startPrank(safe);
         dir.proposeVersion(_v(address(v2), address(0), address(0), "v2"));
         dir.proposeCurrent(2);
         vm.stopPrank();
@@ -126,7 +126,7 @@ contract DirectoryTest is Base {
         dir.cancelCurrent();
         vm.stopPrank();
 
-        vm.startPrank(directoryOwner);
+        vm.startPrank(safe);
         dir.cancelVersion();
         dir.cancelCurrent();
         vm.expectRevert(ProtocolDirectory.NothingPending.selector);
@@ -145,7 +145,7 @@ contract DirectoryTest is Base {
     }
 
     function test_ProposalChecks() public {
-        vm.startPrank(directoryOwner);
+        vm.startPrank(safe);
         vm.expectRevert(abi.encodeWithSelector(ProtocolDirectory.AlreadyListed.selector, address(vault)));
         dir.proposeVersion(_v(address(vault), address(0), address(0), "v1 again"));
         vm.expectRevert(abi.encodeWithSelector(ProtocolDirectory.NoCode.selector, alice));
@@ -168,15 +168,15 @@ contract DirectoryTest is Base {
     /// @dev Switching back to an older version is allowed (a v2 found broken): nothing is deleted on the way.
     function test_CurrentMayGoBack() public {
         (ITaskVault v2,,) = _deployV2();
-        vm.prank(directoryOwner);
+        vm.prank(safe);
         dir.proposeVersion(_v(address(v2), address(0), address(0), "v2"));
         vm.warp(vm.getBlockTimestamp() + 48 hours);
         dir.addVersion();
-        vm.prank(directoryOwner);
+        vm.prank(safe);
         dir.proposeCurrent(2);
         vm.warp(vm.getBlockTimestamp() + 48 hours);
         dir.setCurrent();
-        vm.prank(directoryOwner);
+        vm.prank(safe);
         dir.proposeCurrent(1);
         vm.warp(vm.getBlockTimestamp() + 48 hours);
         dir.setCurrent();

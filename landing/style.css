@@ -349,6 +349,8 @@ section:not(.hero) { max-width: var(--max); margin: 0 auto; padding: clamp(56px,
 .legend summary { cursor: pointer; font: 700 14px/1 var(--sans); color: var(--muted); }
 .legend summary:hover { color: var(--ink); }
 .legend p { margin-top: 12px; color: var(--muted); font-size: 15px; max-width: 54em; }
+.legend ul { margin: 12px 0 0; padding-left: 1.1em; color: var(--muted); font-size: 15px; max-width: 54em; }
+.legend li + li { margin-top: 6px; }
 
 /* NFT holders */
 .nft-row { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }

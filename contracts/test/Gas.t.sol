@@ -4,9 +4,9 @@ pragma solidity ^0.8.28;
 import "./Base.t.sol";
 
 /// @dev Steady-state gas of the main functions (warm-ish storage like on mainnet after the first task). Printed with
-///      -vv; numbers are also asserted against loose ceilings. Since the launch split (vault + two desks, parameters
-///      read from the registry per call) createTask and submit cost ~25k / ~75k more than the single-contract vault
-///      (331k / 379k); the ceilings were raised from 350k / 450k accordingly.
+///      -vv; numbers are also asserted against loose ceilings (vault + two desks, parameters read from the
+///      registry per call). createTask reads no price (no USD lookup, no DevPrices call): cheaper than
+///      its 450k ceiling, a loose upper bound.
 contract GasTest is Base {
     function setUp() public override {
         super.setUp();
@@ -28,7 +28,8 @@ contract GasTest is Base {
     function test_GasProfile() public {
         _start();
         uint256 t = _create(author, address(usdc), 100e6);
-        assertLt(_measure("createTask (USDC, mode B)"), 400_000);
+        // three rule texts stored (the test task: 21 + 44 + 14 B)
+        assertLt(_measure("createTask (USDC, mode B)"), 500_000);
 
         _start();
         _create(author, ETH, 0.05 ether);
@@ -48,32 +49,25 @@ contract GasTest is Base {
 
         _start();
         _dispute(dave, s);
-        _measure("dispute (first: starts the vote)");
+        _measure("dispute (starts the vote)");
+        // One dispute, one disputer - a second dispute() on the same submission
+        // reverts; there is no "second disputer" gas profile.
 
-        _start();
-        _dispute(erin, s);
-        _measure("dispute (second)");
+        // There is no "doer answers the dispute" step - the doer's "why honest" text
+        // is attached at submission (Evidence.note), there is no separate reply() gas profile.
 
+        // votes by NFT ids: every wallet here votes all its NFTs. The accept votes go first so the running
+        // margin stays under instantDelta (20): 5 -> 7 -> 13 (reject), decided at the vote end (endDelta 10).
+        vm.prank(voters[3]);
+        vault.vote(s, 1, voters[3], held[voters[3]]);
         _start();
-        vm.prank(doer);
-        vault.reply(s, "ipfs://reply");
-        _measure("reply");
-
-        Ballot[] memory bs = new Ballot[](1);
-        bs[0] = _ballot(s, 1, 2, _ids(120, 20), voters[1]);
+        vm.prank(voters[4]);
+        vault.vote(s, 1, voters[4], held[voters[4]]);
+        _measure("vote (2 NFTs, not the first vote)");
         _start();
-        vm.prank(relayer);
-        vault.submitVotes(s, bs);
-        _measure("submitVotes (1 ballot, 20 NFTs)");
-
-        Ballot[] memory bs3 = new Ballot[](3);
-        bs3[0] = _ballot(s, 2, 2, _ids(140, 10), voters[2]);
-        bs3[1] = _ballot(s, 3, 1, _ids(150, 5), voters[3]);
-        bs3[2] = _ballot(s, 4, 1, _ids(155, 2), voters[4]);
-        _start();
-        vm.prank(relayer);
-        vault.submitVotes(s, bs3);
-        _measure("submitVotes (3 ballots, 17 NFTs)");
+        vm.prank(voters[1]); // the holder sends their own vote
+        vault.vote(s, 2, voters[1], held[voters[1]]);
+        _measure("vote (20 NFTs, not the first vote)");
 
         _warp(24 hours);
         _start();
@@ -86,8 +80,8 @@ contract GasTest is Base {
 
         _warp(12 hours);
         _start();
-        vault.poke(t);
-        _measure("poke (reply window over -> asks the appeal; builds body, pays Intake)");
+        _askAppealSwarm(s); // lazy ask
+        _measure("askAppealSwarm (asks the filed appeal; builds body, pays Intake)");
 
         OracleAttestation.Attestation memory a = _attestation(false);
         bytes memory sig = _sign(a, attesterKey);
@@ -120,17 +114,14 @@ contract GasTest is Base {
         vault.withdraw(address(imd));
         _measure("withdraw (IMD credit)");
 
-        uint256 t4 = _create(author, address(usdc), 100e6);
+        // the reward is locked until the deadline: a contributor takes their share back after expiry
+        uint256 t4 = _createWithDeadline(author, address(usdc), 100e6, uint64(_now() + 1 days));
         _topUp(bob, t4, 10e6);
-        _start();
-        vm.prank(bob);
-        vault.announceWithdraw(t4);
-        _measure("announceWithdraw (idle task)");
-        _warp(WITHDRAW_NOTICE);
+        _warp(1 days);
         _start();
         vm.prank(bob);
         vault.withdrawContribution(t4);
-        _measure("withdrawContribution (idle task)");
+        _measure("withdrawContribution (expires the task on the way)");
 
         // NFT undecided: a paid call to the swarm
         uint256 t3 = _create(author, address(usdc), 100e6);
@@ -147,15 +138,15 @@ contract GasTest is Base {
         vault.poke(t3);
         _measure("poke (swarm silent -> back to the undecided window)");
 
-        // large task: submission asks the mandatory check in the same transaction
+        // a $500 task: no mandatory swarm check, the submission costs what a small one does
         uint256 tl = _create(author, address(usdc), 500e6);
         _start();
         _submit(doer, tl);
-        _measure("submit (large task, includes the Intake request)");
+        assertLt(_measure("submit ($500 task, no Intake request)"), 500_000);
     }
 
     /// @dev Submit with and without the doer's evidence from the same state (snapshot): the difference is the cost
-    ///      of the screenshot digest and the note alone.
+    ///      of the screenshot link and the note alone.
     function test_GasSubmitEvidence() public {
         bytes memory note = new bytes(MAX_NOTE_BYTES);
         for (uint256 i; i < note.length; ++i) {
@@ -163,9 +154,9 @@ contract GasTest is Base {
         }
         Evidence[4] memory variants = [
             _noEvidence(),
-            Evidence(keccak256("picture"), true, ""),
-            Evidence(bytes32(0), false, "Reply is the 3rd one under the post"),
-            Evidence(keccak256("picture"), true, string(note))
+            Evidence("https://i.imgur.com/screenshot.png", ""),
+            Evidence("", "Reply is the 3rd one under the post"),
+            Evidence("https://i.imgur.com/screenshot.png", string(note))
         ];
         string[4] memory names = [
             "submit, proof link only",
@@ -173,7 +164,7 @@ contract GasTest is Base {
             "submit, + 35-byte note",
             "submit, + screenshot + 200-byte note"
         ];
-        uint256[2] memory amounts = [uint256(100e6), 500e6]; // small, large (asks the check in the same call)
+        uint256[2] memory amounts = [uint256(100e6), 500e6]; // $100 and $500: the same path (no mandatory check)
         for (uint256 a; a < 2; ++a) {
             uint256 t = _create(author, address(usdc), amounts[a]);
             uint256 base;
@@ -182,7 +173,7 @@ contract GasTest is Base {
                 _start();
                 vm.prank(doer);
                 vault.submit(t, "https://x.com/doer/status/1", variants[v], 0, type(uint256).max, _noSwap());
-                uint256 g = _measure(string.concat(a == 0 ? "small task: " : "large task: ", names[v]));
+                uint256 g = _measure(string.concat(a == 0 ? "$100 task: " : "$500 task: ", names[v]));
                 if (v == 0) base = g;
                 else emit log_named_uint("  extra gas", g - base);
                 vm.revertToState(snap);

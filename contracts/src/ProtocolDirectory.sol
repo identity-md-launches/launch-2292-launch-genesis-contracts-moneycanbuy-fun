@@ -4,15 +4,15 @@ pragma solidity ^0.8.28;
 /// @title ProtocolDirectory: every version of the core, side by side
 /// @notice A new version of the protocol is a new vault (with its desks and its $YOLO modules) deployed next to the old
 ///         ones; nothing is replaced or migrated. This list says which vaults belong to the protocol and which one new
-///         tasks go to. Any indexer or the site reads it; no contract of the core reads it, so it holds no money and
+///         tasks go to. The site and off-chain readers read it; no contract of the core reads it, so it holds no money and
 ///         can stop nothing: tasks of every version keep running in their own vault to the end.
 ///         - Version 1 is written by the constructor (launch 3: the vault of launch 2 and the modules of launch 3).
-///         - The owner (`safe`: the project wallet, a single project key, an EOA) proposes a new version or a
+///         - The owner (`safe`: the project wallet, an EOA) proposes a new version or a
 ///           new current version; either takes effect 48 h later (the timelock of ParamsRegistry), anyone executes it
 ///           then. The owner may cancel a pending proposal before that.
 ///         - A version is never removed or edited; the current one may only point to a listed version.
 ///         - The owner is fixed at deployment: no transfer, no other role.
-///         Versions live side by side; $YOLO stays the same token for every version.
+///         Versions sit side by side, one $YOLO forever.
 contract ProtocolDirectory {
     uint256 public constant TIMELOCK = 48 hours;
     uint256 public constant MAX_LABEL_BYTES = 32;

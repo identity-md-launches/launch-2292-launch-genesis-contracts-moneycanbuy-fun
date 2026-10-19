@@ -6,21 +6,23 @@ import {Test, console} from "forge-std/Test.sol";
 import {SwarmQuestion} from "../../src/helpers/SwarmQuestion.sol";
 import {LaunchParams, Params} from "../../src/VaultParams.sol";
 
-/// @notice Swarm questions built from the contracts: four example questions (T1-T4: an on-chain check with the
-///         right doer and with another doer, an escalation with a dispute reason and the doer's reply, a page check
-///         without the DOER CODE), built by the same library and the same version-1 template the CaseDesk uses.
-///         The conditions are in the form the task templates write them, the proof is a real mainnet transaction.
-///         `consumer` here is 0x…01; it changes the body only in that field, and the question and its keccak do
-///         not include it. The test prints each body and pins its question hash, so any change to the template or
-///         the builder shows up here.
+/// @notice The bodies of four sample swarm questions (T1-T4), built by the same
+///         library and the same version-1 template the CaseDesk uses. The conditions are sample task rules,
+///         the proof is a real mainnet transaction. `consumer` here is 0x...01: in a real request it is
+///         the wallet that pays for it, which changes the body only there; the question and its keccak do not
+///         include it. The test pins the question hashes below.
 contract ReviewSwarmOrders is Test {
+    /// @dev T1, T2 and T4 are built as escalation-kind questions. The kind is not part of
+    ///      the question or the body (SwarmQuestion.build ignores it), so the first question of an escalation gives
+    ///      the same bytes and the same pinned hashes below.
+    uint8 internal constant KIND_FIRST = SwarmQuestion.KIND_ESCALATION;
     string constant ONCHAIN =
         "Ethereum mainnet tx from DOER to 0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7; calls transfer(address,uint256); transfers at least 10 tokens to any address; succeeded, mined after 2026-10-11 00:00 UTC";
     string constant LINK =
         unicode"Web page; page contains: “Ask the oracle”; https, live at check; DOER CODE on the page";
     string constant TX = "https://etherscan.io/tx/0x0f7efe38f007c795e60cc01f900e4c7eeb3a74418879e9d7dfbd5c527225fb5b";
     address constant SENDER = 0xcF472E2a100E7C97d3440F34eb21be470b8335a5; // from of TX
-    address constant OTHER = address(uint160(uint256(keccak256("other")))); // deterministic, not the sender of TX
+    address constant OTHER = 0xE132be23CE6255930556a45406075E62fb6340C0; // not the sender of TX
 
     function _q(string memory cond, string memory proof, string memory pType, address doer, uint8 kind)
         internal
@@ -31,7 +33,9 @@ contract ReviewSwarmOrders is Test {
         q.prefix = p.questionPrefix;
         q.definitionFields = p.definitionFields;
         q.bodyFields = p.bodyFields;
-        q.taskUri = cond;
+        q.task = cond;
+        q.taskProof = "WINDOW: made after 2026-10-11 00:00 UTC. WHO: DOER = wallet that submits. SOURCE: Etherscan";
+        q.taskNo = "NO if: failed, not from DOER, outside WINDOW, any step missing, unclear";
         q.proofUri = proof;
         q.proofType = pType;
         q.doer = doer;
@@ -52,27 +56,33 @@ contract ReviewSwarmOrders is Test {
     }
 
     function test_printTestQuestions() public pure {
+        // the task's rules are the definitions task / task_proof / task_no, the question only points
+        // to them, so every hash below depends on it.
+        // All four are built first, so a failing run prints every new hash.
         // T1: the doer sent the transaction -> expected true
-        assertEq(
-            _print("T1", _q(ONCHAIN, TX, "onchain_tx", SENDER, SwarmQuestion.KIND_CHECK)),
-            0xa81fa477fd236abd81da4a7aa7567db3f3af1258d95f5127029cdd2f5e60d1ab
-        );
+        bytes32 h1 = _print("T1", _q(ONCHAIN, TX, "onchain_tx", SENDER, KIND_FIRST));
         // T2: same transaction, another doer -> expected false (not sent from DOER)
-        assertEq(
-            _print("T2", _q(ONCHAIN, TX, "onchain_tx", OTHER, SwarmQuestion.KIND_CHECK)),
-            0x16d8833fce2cbf129f8f05b535e8493cc8e70ec8d0e31987a967ddb1f0ad7235
-        );
-        // T3: T1 as an escalation with a false dispute reason and the doer's reply -> expected true
+        bytes32 h2 = _print("T2", _q(ONCHAIN, TX, "onchain_tx", OTHER, KIND_FIRST));
+        // T3: T1 as an escalation with a false dispute reason and the doer's note (their "why
+        // honest" text, attached at submission, not a separate reply) -> expected true
         SwarmQuestion.Input memory q3 = _q(ONCHAIN, TX, "onchain_tx", SENDER, SwarmQuestion.KIND_ESCALATION);
         q3.nonce = 2; // the second question of this submission (asks + 1)
         q3.claims = new string[](1);
         q3.claims[0] = "The transaction moved only 5 IMD, less than the 10 the task requires.";
-        q3.doerReply = "The Transfer log of the transaction shows 379.22 IMD sent from my address.";
-        assertEq(_print("T3", q3), 0x715022536a4488fe0e7e95f8ffddee7221f336ff8a3386c2ef7fdb108d9c857a);
+        q3.claimProofs = new string[](1);
+        q3.claimProofs[0] = "https://etherscan.io/tx/0x0f7efe38f007c795e60cc01f900e4c7eeb3a74418879e9d7dfbd5c527225fb5b";
+        q3.doerNote = "The Transfer log of the transaction shows 379.22 IMD sent from my address.";
+        bytes32 h3 = _print("T3", q3);
         // T4: a public page without the DOER CODE -> expected false
-        assertEq(
-            _print("T4", _q(LINK, "https://imd.fun/docs/", "link", SENDER, SwarmQuestion.KIND_CHECK)),
-            0xd51c5b49f2bf4fa5c8403a242289574134d2a435c5f87dae9a0ddf2f7451f885
-        );
+        bytes32 h4 = _print("T4", _q(LINK, "https://imd.fun/docs/", "link", SENDER, KIND_FIRST));
+        assertEq(h1, HASH_T1);
+        assertEq(h2, HASH_T2);
+        assertEq(h3, HASH_T3);
+        assertEq(h4, HASH_T4);
     }
+
+    bytes32 constant HASH_T1 = 0x47707dca90ae38e5906e60dc636bfb03a6529297d2dfd27826b2be7c1eadcf2e;
+    bytes32 constant HASH_T2 = 0x85666a1c4b4a9d268ab1e65ba46a0a8fc4f6c8f09fe4ccc17d2df44555358212;
+    bytes32 constant HASH_T3 = 0x24ddc09c3c8a7ddfc8e65201e50ebd3c46267c2cdc455a0eee8b7acf158cc504;
+    bytes32 constant HASH_T4 = 0x10533850851b9481fe59ba01e4d7f74747b15498a925e6153086f2443ed3052c;
 }

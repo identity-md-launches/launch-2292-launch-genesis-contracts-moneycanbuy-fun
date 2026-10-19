@@ -19,10 +19,10 @@ interface IVestingRelease {
 ///         of 750M never locks the split). The factory sends the remainder in the launch transaction, so everything
 ///         has arrived before anyone can call. Anything that arrives later goes to the treasury vesting.
 ///         Right after paying, the split calls `release(token)` on the four vestings: their clocks start at the split,
-///         when the token has arrived, not at launch 0 (audit A-03); the at-once parts go to their
+///         when the token has arrived, not at launch 0; the at-once parts go to their
 ///         beneficiaries in the same transaction. The constructor binds this splitter as the only starter of the
 ///         four vestings (`bindStarter`, which they accept only in their own deployment transaction: launch 0 deploys
-///         them and this splitter in one), so no one else can start a clock before the split (swarm audit #2).
+///         them and this splitter in one), so no one else can start a clock before the split (swarm audit 117cf05a #2).
 ///         Anyone may call it; it pays only these five addresses, fixed at deployment. Like the vestings it knows no
 ///         token in advance (launch 0 comes before the token). No owner.
 contract YoloSplitter {

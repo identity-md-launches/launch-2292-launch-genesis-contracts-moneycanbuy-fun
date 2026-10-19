@@ -9,7 +9,7 @@ import {FullMath} from "v4-core/src/libraries/FullMath.sol";
 import {LaunchPlan, IContractFactory} from "../../script/LaunchPlan.sol";
 import {ITaskVault} from "../../src/interfaces/ITaskVault.sol";
 import {ParamsRegistry} from "../../src/ParamsRegistry.sol";
-import {ChainlinkUniV3PriceOracle} from "../../src/oracles/ChainlinkUniV3PriceOracle.sol";
+import {DevPrices} from "../../src/DevPrices.sol";
 import {ProjectVesting} from "../../src/token/ProjectVesting.sol";
 import {YoloToken} from "../../src/token/YoloToken.sol";
 import {NftGate} from "../../src/token/NftGate.sol";
@@ -17,14 +17,15 @@ import {YoloSplitter} from "../../src/token/YoloSplitter.sol";
 import {YoloSweetener} from "../../src/YoloSweetener.sol";
 import {ProtocolDirectory} from "../../src/ProtocolDirectory.sol";
 import {DareTrophy} from "../../src/DareTrophy.sol";
+import {YoloPredict} from "../../src/YoloPredict.sol";
+import {YoloLockHub} from "../../src/YoloLockHub.sol";
+import {BuybackBurner} from "../../src/BuybackBurner.sol";
+import {DisputeDesk} from "../../src/desks/DisputeDesk.sol";
 import "../../src/VaultTypes.sol";
-
-interface IAggregatorRound {
-    function latestRoundData() external view returns (uint80, int256, uint256, uint256, uint80);
-}
+import {rulesOf} from "../mocks/TaskRulesFixture.sol";
 
 /// @dev The live factory's launch entry points and their parameter structs (Identity-md/protocol ProjectFactory.sol,
-///      source verified on Sourcify for 0xfF03410d…7120). `Currency` is an address in the ABI.
+///      source verified on Sourcify for 0xfF03410d...7120). `Currency` is an address in the ABI.
 interface IProjectFactory is IContractFactory {
     struct Launch {
         bytes32 kind;
@@ -75,10 +76,11 @@ interface IProjectFactory is IContractFactory {
     function launchCustom(CustomParams calldata p) external returns (address, address[] memory, address);
     function predictToken(uint64 launchNumber, bytes calldata code) external view returns (address);
     function claimFees(uint64 launchNumber) external returns (uint256 amount0, uint256 amount1);
+    function distributorOf(uint64 launchNumber) external view returns (address);
 }
 
 /// @dev Put at the platform deployer's address: the launch call starts here, as the deployer's own transaction would,
-///      and the gas is counted once (gasleft() around a pranked call from the test would count the
+///      and the gas is counted once (gasleft() around a pranked call from the test would otherwise count the
 ///      intrinsic gas a second time).
 contract LaunchGasMeter {
     function run(address target, bytes calldata data) external returns (bool ok, uint256 used, bytes memory ret) {
@@ -152,8 +154,8 @@ contract V4Buyer {
     }
 }
 
-/// @dev Uniswap v4 periphery on mainnet: the Universal Router (V4_SWAP) and Permit2, as wallets and buy front-ends use
-///      them; delegate.xyz v2 (writing a delegation) and the identity.md NFT.
+/// @dev Uniswap v4 periphery on mainnet: the Universal Router (V3_SWAP_EXACT_IN, WRAP_ETH, V4_SWAP) and Permit2, as
+///      wallets and the site use them; the identity.md NFT.
 interface IUniversalRouter {
     function execute(bytes calldata commands, bytes[] calldata inputs, uint256 deadline) external payable;
 }
@@ -162,37 +164,40 @@ interface IPermit2 {
     function approve(address token, address spender, uint160 amount, uint48 expiration) external;
 }
 
-interface IDelegateRegistryV2 {
-    function delegateERC721(address to, address contract_, uint256 tokenId, bytes32 rights, bool enable)
-        external
-        payable
-        returns (bytes32);
-}
-
 interface IERC721Min {
     function ownerOf(uint256 tokenId) external view returns (address);
     function transferFrom(address from, address to, uint256 tokenId) external;
+}
+
+/// @dev The live factory's MerkleDistributor of a launch (its Sourcify-verified source): the
+///      swarm's 10% is claimed with an OpenZeppelin StandardMerkleTree proof once the round unlocks.
+interface IMerkleDistributorMin {
+    function claim(uint256 round, address account, uint256 amount, bytes32[] calldata proof) external;
+    function roundCount() external view returns (uint256);
 }
 
 /// @notice All four launches rehearsed through the REAL mainnet ProjectFactory (impersonating its deployer, the
 ///         plane's key), with the gas of each launch transaction measured against the EIP-7825 cap: execution measured
 ///         at the deployer's address (LaunchGasMeter) plus the intrinsic cost (21,000 + 16 per nonzero byte + 4 per
 ///         zero byte), at least the EIP-7623 calldata floor; every contract against the EIP-170 size limit. Then the
-///         project's 75% is split, $YOLO's first hour is traded through the live Universal Router (the NFT gate with
-///         real identity.md holders and a real delegate.xyz delegation, the buy tax at its edges), the oracle samples
-///         its pool, and tasks in IMD and in YOLO go through the deployed vault. Read-only: nothing leaves the fork.
+///         project's 75% is split, $YOLO's opening and first hour are traded through the live Universal Router (no buy
+///         before openAt, the snapshot of real identity.md holders, USDC and ETH routed through IMD, the buy tax at
+///         its edges), and tasks in IMD
+///         and in YOLO go through the deployed vault (DevPrices: a fixed parameter, no oracle to sample).
+///         Read-only: nothing leaves the fork.
 ///         0. evm_contracts: NftGate, IncentivesVesting, DevVesting, TeamVesting, TreasuryVesting, YoloSplitter.
 ///         1. custom_token: $YOLO + its YOLO/IMD pool (15%) + the swarm's distributor (10%) + the seven support
-///            contracts; the remainder (75%) goes to the YoloSplitter.
+///            contracts (DevPrices, no oracle); the remainder (75%) goes to the
+///            YoloSplitter.
 ///         2. evm_contracts: the desks and the vault (YOLO is a static argument).
-///         3. evm_contracts: YoloSweetener, DareTrophy and the ProtocolDirectory (version 1 = this vault).
+///         3. evm_contracts: YoloSweetener, TrophyCatalog, DareTrophy, the ProtocolDirectory (version 1 = this
+///            vault), HiddenList, YoloPredict.
 ///   FORK_URL=<archive mainnet RPC> forge test --match-contract LaunchRehearsal -vv
 ///   (or: forge test --match-contract LaunchRehearsal --fork-url <RPC> -vv)
 contract LaunchRehearsalForkTest is Test {
     IProjectFactory constant FACTORY = IProjectFactory(0xfF03410d0Fe5fa8f7F59F743de35E333D9857120);
     IUniversalRouter constant UR = IUniversalRouter(0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af);
     IPermit2 constant PERMIT2 = IPermit2(0x000000000022D473030F116dDEE9F6B43aC78BA3);
-    IDelegateRegistryV2 constant DELEGATES = IDelegateRegistryV2(LaunchPlan.DELEGATE_XYZ);
     IERC721Min constant NFT = IERC721Min(LaunchPlan.NFT);
     uint256 constant TX_GAS_CAP = 16_777_216;
     uint256 constant EIP170 = 24_576;
@@ -200,9 +205,9 @@ contract LaunchRehearsalForkTest is Test {
     uint64 constant LAUNCH_SUPPORT = 4_000_000_101;
     uint64 constant LAUNCH_CORE = 4_000_000_102;
     uint64 constant LAUNCH_EXTRAS = 4_000_000_103;
-    // the project's wallets, placeholders here: the project wallet <TREASURY> (the owner is a single project key,
-    // EOA: owner of the registry and the directory, the buy tax, the treasury vesting; also the launch 1 payer, so the
-    // pool's requester from the first block), the incentives wallet, the Stabilizer wallet, the dev and the future team
+    // placeholders here: the project wallet <TREASURY> (no Safe; owner of the
+    // registry and the directory, the buy tax, the treasury vesting; here also the launch payer), the incentives
+    // wallet, the Stabilizer wallet, the dev and the future team
     address constant TREASURY = address(0x7EA5);
     address constant OWNER = TREASURY;
     address constant INCENTIVES = address(0x1CE7);
@@ -214,7 +219,17 @@ contract LaunchRehearsalForkTest is Test {
     uint256 constant START_FDV_IMD = LaunchPlan.YOLO_OPENING_MCAP_IMD;
     // Universal Router: commands and v4 actions
     uint8 constant V4_SWAP = 0x10;
+    uint8 constant V3_SWAP_EXACT_IN = 0x00;
+    uint8 constant WRAP_ETH = 0x0b;
     uint8 constant SWEEP = 0x04;
+    uint8 constant SETTLE = 0x0b; // v4 action: pay a currency from the router's balance or the user
+    uint256 constant CONTRACT_BALANCE = 1 << 255; // ActionConstants: the router's whole balance
+    // mainnet v3 pools of IMD (factory.getPool, liquidity()): USDC/IMD 0.3% (0x894D...c520) is the only one
+    // with liquidity (WETH/IMD 1% and USDC/IMD 1% hold none), so ETH goes WETH -> USDC (0.05%) -> IMD
+    uint24 constant V3_FEE_USDC_IMD = 3_000;
+    uint24 constant V3_FEE_WETH_USDC = 500;
+    // trading opens this long after the token launch (the plan's openAt is an input of launch 1)
+    uint256 constant OPEN_DELAY = 2 hours;
     uint8 constant SWAP_EXACT_IN_SINGLE = 0x06;
     uint8 constant SETTLE_ALL = 0x0c;
     uint8 constant TAKE = 0x0e;
@@ -238,8 +253,10 @@ contract LaunchRehearsalForkTest is Test {
     }
 
     address internal yolo;
+    uint256 internal openAt;
     LaunchPlan.Genesis internal genesis;
     uint64 internal coreBlock; // the block of launch 2: version 1 of the directory starts there
+    bytes32 internal swarmRoot; // the swarm round's merkle root of launch 1 (0 = a placeholder root)
 
     function setUp() public {
         string memory url = vm.envOr("FORK_URL", string(""));
@@ -270,42 +287,85 @@ contract LaunchRehearsalForkTest is Test {
         uint256 gasGenesis = _launchGenesis();
         (LaunchPlan.Support memory s, uint256 gasSupport) = _launchSupportWithToken();
         (address[] memory core, uint256 gasCore) = _launchCore(s);
-        (address[] memory extra, uint256 gasExtras) = _launchExtras(core[2]);
+        (address[] memory extra, uint256 gasExtras) = _launchExtras(core[LaunchPlan.CORE_VAULT]);
         emit log_named_uint("launch 0 (evm_contracts: gate, vestings, splitter) total gas", gasGenesis);
         emit log_named_uint("launch 1 (custom_token: YOLO + support) total gas", gasSupport);
         emit log_named_uint("launch 2 (evm_contracts: core) total gas", gasCore);
-        emit log_named_uint("launch 3 (evm_contracts: YoloSweetener + DareTrophy + ProtocolDirectory) total gas", gasExtras);
+        emit log_named_uint("launch 3 (evm_contracts: $YOLO modules, catalog, directory, hide list) total gas", gasExtras);
         assertLt(gasGenesis, TX_GAS_CAP, "launch 0 must fit one transaction");
         assertLt(gasSupport, TX_GAS_CAP, "launch 1 must fit one transaction");
         assertLt(gasCore, TX_GAS_CAP, "launch 2 must fit one transaction");
         assertLt(gasExtras, TX_GAS_CAP, "launch 3 must fit one transaction");
-        assertEq(address(YoloSweetener(extra[0]).vault()), core[2], "sweetener reads this vault");
+        assertEq(address(YoloSweetener(extra[0]).vault()), core[LaunchPlan.CORE_VAULT], "sweetener reads this vault");
         assertEq(address(YoloSweetener(extra[0]).yolo()), yolo);
-        assertEq(address(DareTrophy(extra[1]).vault()), core[2], "trophy reads this vault");
-        assertEq(address(DareTrophy(extra[1]).caseDesk()), core[0]);
-        assertEq(DareTrophy(extra[1]).price(), LaunchPlan.TROPHY_FALLBACK_YOLO, "no YOLO price yet: the fixed amount");
-        ProtocolDirectory dir = ProtocolDirectory(extra[2]);
+        assertEq(address(DareTrophy(extra[2]).vault()), core[LaunchPlan.CORE_VAULT], "trophy reads this vault");
+        assertEq(address(DareTrophy(extra[2]).caseDesk()), core[LaunchPlan.CORE_CASE]);
+        assertEq(DareTrophy(extra[2]).price(), 7_777e18, "fixed 7,777 YOLO");
+        assertEq(address(DareTrophy(extra[2]).catalog()), extra[1], "trophy reads the catalog deployed before it");
+        ProtocolDirectory dir = ProtocolDirectory(extra[3]);
         ProtocolDirectory.Version memory v1 = dir.version(1);
         assertEq(dir.safe(), OWNER, "directory: the project wallet, as the registry");
         assertEq(dir.current(), 1);
         assertEq(dir.versionCount(), 1);
-        assertEq(v1.vault, core[2], "version 1 = the vault of launch 2");
+        assertEq(v1.vault, core[LaunchPlan.CORE_VAULT], "version 1 = the vault of launch 2");
         assertEq(v1.sweetener, extra[0]);
-        assertEq(v1.trophy, extra[1]);
+        assertEq(v1.trophy, extra[2]);
         assertEq(v1.fromBlock, coreBlock);
         assertEq(v1.label, "v1");
+        assertEq(address(YoloPredict(extra[5]).vault()), core[LaunchPlan.CORE_VAULT], "YoloPredict reads this vault");
+        assertEq(address(YoloLockHub(core[LaunchPlan.CORE_HUB]).yolo()), yolo, "the doer stake is in $YOLO");
+        assertEq(address(DisputeDesk(core[LaunchPlan.CORE_DISPUTE]).doerStake()), core[LaunchPlan.CORE_HUB], "the DisputeDesk reads the hub of launch 2");
+        assertEq(ITaskVault(core[LaunchPlan.CORE_VAULT]).burner(), s.burner, "the vault burns through this burner");
 
-        ITaskVault vault = ITaskVault(core[2]);
-        assertEq(vault.caseDesk(), core[0]);
-        assertEq(vault.disputeDesk(), core[1]);
+        ITaskVault vault = ITaskVault(core[LaunchPlan.CORE_VAULT]);
+        assertEq(vault.caseDesk(), core[LaunchPlan.CORE_CASE]);
+        assertEq(vault.disputeDesk(), core[LaunchPlan.CORE_DISPUTE]);
         assertEq(vault.registry(), s.registry);
         assertEq(vault.yolo(), yolo);
         assertEq(ParamsRegistry(s.registry).owner(), OWNER);
         assertTrue(ParamsRegistry(s.registry).isAttester(LaunchPlan.ATTESTER));
         _checkSupplyAndSplit();
-        _yoloFirstHour(); // first: the schedule runs in the first hour after the launch
+        _yoloFirstHour(); // first: the opening and the schedule run in the hours after the launch
         _smoke(vault);
-        _yoloOracleAndTask(vault, ChainlinkUniV3PriceOracle(s.priceOracle));
+        _yoloPriceAndTask(vault, DevPrices(s.devPrices));
+        _burner(BuybackBurner(payable(s.burner)), DevPrices(s.devPrices));
+    }
+
+    /// @dev The BuybackBurner swaps nothing: a stranger sends the live USDC, IMD and
+    ///      ETH it holds to the buyback wallet and burns its $YOLO; the dev wallet (owner of the DevPrices) alone
+    ///      changes the buyback wallet.
+    function _burner(BuybackBurner burner, DevPrices prices) internal {
+        address dead = 0x000000000000000000000000000000000000dEaD;
+        address stranger = makeAddr("stranger");
+        address wallet = burner.buybackWallet();
+        assertEq(wallet, LaunchPlan.PROJECT_BUYBACK, "the owner's buyback wallet");
+        assertEq(burner.dev(), prices.owner(), "the dev wallet = owner of the DevPrices");
+        assertEq(burner.dev(), LaunchPlan.PROJECT_DEV, "the dev wallet of the plan");
+        deal(LaunchPlan.USDC, address(burner), 250e6);
+        deal(LaunchPlan.IMD, address(burner), 30e18);
+        vm.deal(address(burner), 0.1 ether);
+        uint256 u0 = IERC20(LaunchPlan.USDC).balanceOf(wallet);
+        uint256 i0 = IERC20(LaunchPlan.IMD).balanceOf(wallet);
+        uint256 e0 = wallet.balance;
+        vm.startPrank(stranger);
+        burner.forward(LaunchPlan.USDC);
+        burner.forward(LaunchPlan.IMD);
+        burner.forward(address(0));
+        vm.stopPrank();
+        assertEq(IERC20(LaunchPlan.USDC).balanceOf(wallet) - u0, 250e6);
+        assertEq(IERC20(LaunchPlan.IMD).balanceOf(wallet) - i0, 30e18);
+        assertEq(wallet.balance - e0, 0.1 ether);
+        deal(yolo, address(burner), 1_000e18);
+        vm.prank(stranger);
+        vm.expectRevert(BuybackBurner.NotReserve.selector);
+        burner.forward(yolo);
+        uint256 deadBefore = IERC20(yolo).balanceOf(dead);
+        vm.prank(stranger);
+        burner.burnYolo();
+        assertEq(IERC20(yolo).balanceOf(dead) - deadBefore, 1_000e18, "straight to 0x...dEaD");
+        vm.prank(stranger);
+        vm.expectRevert(BuybackBurner.NotDev.selector);
+        burner.setBuybackWallet(stranger);
     }
 
     // ------------------------------------------------------------------ launches
@@ -325,7 +385,8 @@ contract LaunchRehearsalForkTest is Test {
     }
 
     function _launchSupportWithToken() internal returns (LaunchPlan.Support memory s, uint256 total) {
-        bytes memory tokenCode = LaunchPlan.yoloTokenCode(genesis.gate, OWNER);
+        openAt = vm.getBlockTimestamp() + OPEN_DELAY;
+        bytes memory tokenCode = LaunchPlan.yoloTokenCode(genesis.gate, OWNER, openAt);
         yolo = FACTORY.predictToken(LAUNCH_SUPPORT, tokenCode);
         bytes[] memory codes;
         bytes32[] memory names;
@@ -334,14 +395,15 @@ contract LaunchRehearsalForkTest is Test {
         address[] memory expected = new address[](codes.length);
         (expected[0], expected[1], expected[2], expected[3], expected[4], expected[5], expected[6]) =
         (
-            s.priceOracle,
+            s.devPrices,
             s.swapAdapter,
             s.registry,
             s.textRules,
             s.questionBuilder,
-            s.ballotChecker,
+            s.votePower,
             s.attestationChecker
         );
+        expected[7] = s.burner;
         IProjectFactory.CustomParams memory p;
         p.launchNumber = LAUNCH_SUPPORT;
         p.tokenCreationCode = tokenCode;
@@ -352,7 +414,7 @@ contract LaunchRehearsalForkTest is Test {
         p.totalSupply = LaunchPlan.YOLO_SUPPLY;
         p.poolBps = POOL_BPS;
         p.remainderTo = genesis.splitter;
-        p.merkleRoot = keccak256("swarm round");
+        p.merkleRoot = swarmRoot != bytes32(0) ? swarmRoot : keccak256("swarm round");
         p.contributorLockSeconds = 1 hours;
         p.sweepDelaySeconds = 365 days;
         p.pairedCurrency = LaunchPlan.IMD;
@@ -435,7 +497,7 @@ contract LaunchRehearsalForkTest is Test {
     // ------------------------------------------------------------------ $YOLO after the launch
 
     /// @dev Where the 1B went: the pool 15%, the swarm's 10%, the remainder (75%) in the splitter; one split hands it
-    ///      out as the tokenomics has it. The factory keeps nothing.
+    ///      out. The factory keeps nothing.
     function _checkSupplyAndSplit() internal {
         IERC20 y = IERC20(yolo);
         uint256 inPool = y.balanceOf(LaunchPlan.POOL_MANAGER);
@@ -448,7 +510,7 @@ contract LaunchRehearsalForkTest is Test {
         uint256 incBefore = y.balanceOf(INCENTIVES);
         uint256 treBefore = y.balanceOf(TREASURY);
         YoloSplitter(genesis.splitter).split(yolo);
-        // the split starts the four clocks (A-03) and pays the at-once parts in the same transaction
+        // the split starts the four clocks and pays the at-once parts in the same transaction
         assertEq(y.balanceOf(genesis.incentives) + y.balanceOf(INCENTIVES) - incBefore, 250_000_000e18, "incentives 25%");
         assertEq(y.balanceOf(INCENTIVES) - incBefore, 62_500_000e18, "incentives: a quarter at the split");
         assertEq(y.balanceOf(STABILIZER), 150_000_000e18, "Stabilizer 15%");
@@ -484,7 +546,7 @@ contract LaunchRehearsalForkTest is Test {
         vm.revertToState(snap);
     }
 
-    // ---- the Universal Router, as a wallet or the buy page drives it
+    // ---- the Universal Router, as a wallet or the site drives it
 
     function _key() internal view returns (PoolKey memory k) {
         bool imdIs0 = LaunchPlan.IMD < yolo;
@@ -552,8 +614,49 @@ contract LaunchRehearsalForkTest is Test {
         UR.execute(abi.encodePacked(V4_SWAP), inputs, block.timestamp + 60);
     }
 
+    /// @dev `who` sells `yoloIn` YOLO for USDC routed through IMD, one router call: V4_SWAP YOLO -> IMD (SETTLE_ALL the
+    ///      YOLO from `who` through Permit2, TAKE the IMD to the router), then v3 IMD -> USDC 0.3% to `who`.
+    function _urSellRouted(address who, uint256 yoloIn) internal returns (bool ok, uint256 usdcGot, bytes memory ret) {
+        PoolKey memory k = _key();
+        bool yoloIs0 = k.currency0 == yolo;
+        bytes[] memory params = new bytes[](3);
+        params[0] = abi.encode(ExactInputSingleParams(k, yoloIs0, uint128(yoloIn), 0, bytes("")));
+        params[1] = abi.encode(yolo, yoloIn);
+        params[2] = abi.encode(LaunchPlan.IMD, address(2), uint256(0)); // the whole IMD credit to the router
+        bytes[] memory inputs = new bytes[](2);
+        inputs[0] = abi.encode(abi.encodePacked(SWAP_EXACT_IN_SINGLE, SETTLE_ALL, TAKE), params);
+        inputs[1] = abi.encode(
+            who, CONTRACT_BALANCE, uint256(0), abi.encodePacked(LaunchPlan.IMD, V3_FEE_USDC_IMD, LaunchPlan.USDC), false
+        );
+        uint256 before = IERC20(LaunchPlan.USDC).balanceOf(who);
+        vm.prank(who, who);
+        (ok, ret) = address(UR).call(
+            abi.encodeCall(
+                IUniversalRouter.execute, (abi.encodePacked(V4_SWAP, V3_SWAP_EXACT_IN), inputs, block.timestamp + 60)
+            )
+        );
+        usdcGot = IERC20(LaunchPlan.USDC).balanceOf(who) - before;
+    }
+
+    /// @dev A sell of `yoloIn` into the pool at `e` seconds after the opening, through the router for IMD: the pool
+    ///      gets `yoloIn`, the seller pays the tax on top, the treasury gets exactly that share of all they parted with.
+    function _taxedSell(address who, uint256 yoloIn, uint256 e, string memory label) internal {
+        uint256 num = e < 30 minutes ? 3_000 * 30 minutes : (e < 60 minutes ? 3_000 * (60 minutes - e) : 0);
+        uint256 tax = num == 0 ? 0 : yoloIn * num / (10_000 * 30 minutes - num);
+        uint256 safeBefore = IERC20(yolo).balanceOf(OWNER);
+        uint256 b0 = IERC20(yolo).balanceOf(who);
+        uint256 i0 = IERC20(LaunchPlan.IMD).balanceOf(who);
+        _urSell(who, yoloIn);
+        assertEq(b0 - IERC20(yolo).balanceOf(who), yoloIn + tax, string.concat(label, ": the seller pays yoloIn + tax"));
+        assertEq(IERC20(yolo).balanceOf(OWNER) - safeBefore, tax, string.concat(label, ": the sell tax to the treasury"));
+        assertGt(IERC20(LaunchPlan.IMD).balanceOf(who), i0, "IMD received");
+        emit log_named_decimal_uint(string.concat(label, ": sell, YOLO into the pool"), yoloIn, 18);
+        emit log_named_decimal_uint(string.concat(label, ": sell tax to the treasury"), tax, 18);
+        emit log_named_decimal_uint(string.concat(label, ": IMD received"), IERC20(LaunchPlan.IMD).balanceOf(who) - i0, 18);
+    }
+
     /// @dev The token's reason inside the PoolManager's WrappedError(target, selector, reason, details), as a wallet
-    ///      or the buy page decodes it.
+    ///      or the site decodes it.
     function _innerReason(bytes memory ret) internal view returns (bytes memory reason) {
         assertEq(bytes4(ret), WRAPPED_ERROR, "the PoolManager wraps the token's error");
         bytes memory body = new bytes(ret.length - 4);
@@ -565,57 +668,147 @@ contract LaunchRehearsalForkTest is Test {
         assertEq(target, yolo, "the wrapped error is the token's");
     }
 
-    function _next(uint256 secondsAfterStart) internal {
-        vm.warp(YoloToken(yolo).start() + secondsAfterStart);
+    function _next(uint256 secondsAfterOpen) internal {
+        vm.warp(openAt + secondsAfterOpen);
         vm.roll(vm.getBlockNumber() + 1);
     }
 
-    /// @dev $YOLO's first hour on the live pool, through the live Universal Router:
-    ///      minutes 0-30 only registered identity.md NFTs (real holders, a real delegate.xyz delegation), the
-    ///      allowance per NFT, routes through a router refused, the NFT bound for good; at minute 30 the gate ends
-    ///      and the buy tax starts at 30%, falls to 0 at minute 60, goes to the treasury; the factory's fee claim
-    ///      is exempt; after minute 60 a plain ERC-20.
+    /// @dev `who` buys YOLO with USDC or ETH routed through IMD, as a wallet does it on mainnet: the first hop on
+    ///      v3 (USDC/IMD 0.3%, or WRAP_ETH then WETH/USDC 0.05% and USDC/IMD 0.3%) into the router, then V4_SWAP: SETTLE the
+    ///      router's IMD, swap the whole credit, TAKE_ALL YOLO straight to `who` (or with `viaRouter` TAKE to the
+    ///      router and SWEEP to `who`).
+    function _urBuyRouted(address who, bool withEth, uint256 amountIn, bool viaRouter)
+        internal
+        returns (bool ok, uint256 got, bytes memory ret)
+    {
+        PoolKey memory k = _key();
+        bool imdIs0 = k.currency0 == LaunchPlan.IMD;
+        bytes[] memory params = new bytes[](3);
+        params[0] = abi.encode(LaunchPlan.IMD, CONTRACT_BALANCE, false); // SETTLE the router's IMD
+        params[1] = abi.encode(ExactInputSingleParams(k, imdIs0, 0, 0, bytes(""))); // 0 = the whole open credit
+        bytes memory actions;
+        if (!viaRouter) {
+            params[2] = abi.encode(yolo, uint256(0));
+            actions = abi.encodePacked(SETTLE, SWAP_EXACT_IN_SINGLE, TAKE_ALL);
+        } else {
+            params[2] = abi.encode(yolo, address(2), uint256(0));
+            actions = abi.encodePacked(SETTLE, SWAP_EXACT_IN_SINGLE, TAKE);
+        }
+        bytes memory v4 = abi.encode(actions, params);
+        bytes memory commands;
+        bytes[] memory inputs = new bytes[](withEth ? 3 : 2);
+        uint256 i;
+        if (withEth) {
+            commands = abi.encodePacked(WRAP_ETH);
+            inputs[i++] = abi.encode(address(2), amountIn);
+            inputs[i++] = abi.encode(
+                address(2), CONTRACT_BALANCE, uint256(0),
+                abi.encodePacked(LaunchPlan.WETH, V3_FEE_WETH_USDC, LaunchPlan.USDC, V3_FEE_USDC_IMD, LaunchPlan.IMD), false
+            );
+        } else {
+            inputs[i++] = abi.encode(
+                address(2), amountIn, uint256(0), abi.encodePacked(LaunchPlan.USDC, V3_FEE_USDC_IMD, LaunchPlan.IMD), true
+            );
+        }
+        commands = abi.encodePacked(commands, V3_SWAP_EXACT_IN, V4_SWAP);
+        inputs[i++] = v4;
+        if (viaRouter) {
+            commands = abi.encodePacked(commands, SWEEP);
+            bytes[] memory more = new bytes[](inputs.length + 1);
+            for (uint256 j; j < inputs.length; ++j) {
+                more[j] = inputs[j];
+            }
+            more[inputs.length] = abi.encode(yolo, who, uint256(0));
+            inputs = more;
+        }
+        uint256 before = IERC20(yolo).balanceOf(who);
+        vm.prank(who, who);
+        (ok, ret) = address(UR).call{value: withEth ? amountIn : 0}(
+            abi.encodeCall(IUniversalRouter.execute, (commands, inputs, block.timestamp + 60))
+        );
+        got = IERC20(yolo).balanceOf(who) - before;
+    }
+
+    /// @dev $YOLO's opening and first hour on the live pool, through the live Universal Router:
+    ///      before openAt nobody buys, not even a snapshot wallet; the project wallet writes the snapshot of real
+    ///      identity.md holders and seals it before openAt; minutes 0-30 after openAt only the snapshot's wallets
+    ///      buy, up to 500,000 YOLO per NFT, with IMD or with USDC and ETH routed through IMD, YOLO straight to the
+    ///      buyer; a route through a router or a contract in between is refused; an NFT moved after the snapshot
+    ///      gives nothing; every sell pays 30% from openAt (for IMD, and YOLO -> IMD -> USDC); at minute 30 the
+    ///      buy and the sell tax are 30% and fall to 0 at minute 60, to the treasury; the factory's fee claim is
+    ///      exempt; after minute 60 a plain ERC-20.
     function _yoloFirstHour() internal {
         NftGate gate = NftGate(genesis.gate);
         YoloToken token = YoloToken(yolo);
-        assertEq(token.start(), vm.getBlockTimestamp(), "the clock starts with the pool");
+        assertEq(token.openAt(), openAt, "openAt as launched");
+        assertEq(gate.writer(), TREASURY, "the project wallet writes the snapshot");
         address bot = makeAddr("bot");
         address holder = NFT.ownerOf(0);
-        address cold = NFT.ownerOf(1999);
-        address hot = makeAddr("hotWallet");
-        require(holder != cold, "two different real holders");
-        address[3] memory buyers = [bot, holder, hot];
+        address second = NFT.ownerOf(1999);
+        require(holder != second, "two different real holders");
+        address[4] memory buyers = [bot, holder, second, STABILIZER];
         for (uint256 i; i < buyers.length; ++i) {
             deal(LaunchPlan.IMD, buyers[i], 1_000e18);
             _approveRouter(buyers[i], LaunchPlan.IMD);
         }
-        _next(12);
-        // the treasury's at-once third, paid by the split (A-03), sits with the tax recipient already
+        deal(LaunchPlan.USDC, second, 1_000e6);
+        _approveRouter(second, LaunchPlan.USDC);
+        vm.deal(second, 1 ether);
+        // the treasury's at-once third, paid by the split, sits with the tax recipient already
         uint256 ownerAtStart = IERC20(yolo).balanceOf(OWNER);
 
-        // minute 0: not registered -> NotWhitelisted, decoded from the router's revert data
-        (bool ok,, bytes memory ret,) = _urBuy(bot, 5e18, false);
+        // before openAt the pool is seeded but nobody buys, a holder neither
+        vm.warp(vm.getBlockTimestamp() + 12);
+        vm.roll(vm.getBlockNumber() + 1);
+        assertFalse(token.tradingOpen());
+        (bool ok,, bytes memory ret,) = _urBuy(holder, 5e18, false);
+        assertFalse(ok);
+        assertEq(_innerReason(ret), abi.encodeWithSelector(YoloToken.TradingNotOpen.selector, openAt));
+
+        // the snapshot shortly before the opening: the project wallet writes the holders (one NFT each here: the
+        // mechanics; script/snapshot reads the real counts at a block) and seals it
+        address[] memory w = new address[](2);
+        uint256[] memory n = new uint256[](2);
+        (w[0], n[0], w[1], n[1]) = (holder, 1, second, 1);
+        vm.prank(bot);
+        vm.expectRevert(NftGate.NotWriter.selector);
+        gate.record(w, n);
+        vm.prank(TREASURY);
+        uint256 g0 = gasleft();
+        gate.record(w, n);
+        emit log_named_uint("snapshot: record 2 wallets gas", g0 - gasleft());
+        vm.prank(TREASURY);
+        gate.seal(block.number);
+        vm.prank(TREASURY);
+        vm.expectRevert(NftGate.AlreadySealed.selector);
+        gate.record(w, n);
+        assertEq(gate.totalNfts(), 2);
+        _next(0); // openAt itself
+        assertTrue(token.tradingOpen());
+        _next(12);
+
+        // minute 0: not in the snapshot -> NotWhitelisted, decoded from the router's revert data
+        (ok,, ret,) = _urBuy(bot, 5e18, false);
         assertFalse(ok);
         assertEq(_innerReason(ret), abi.encodeWithSelector(YoloToken.NotWhitelisted.selector, bot));
 
-        // a real holder registers NFT #0 and buys straight through TAKE_ALL, untaxed
-        uint256[] memory ids = new uint256[](1);
-        vm.prank(holder);
-        uint256 g0 = gasleft();
-        gate.register(ids);
-        emit log_named_uint("register 1 NFT (owner) gas", g0 - gasleft());
-        assertEq(gate.registeredCount(), 1);
+        // a snapshot wallet buys with IMD straight through TAKE_ALL, untaxed
         uint256 got;
         uint256 g;
         (ok, got,, g) = _urBuy(holder, 5e18, false);
-        assertTrue(ok, "a registered holder buys through the Universal Router");
-        emit log_named_decimal_uint("minute 0, NFT holder: YOLO for 5 IMD", got, 18);
+        assertTrue(ok, "a snapshot wallet buys through the Universal Router");
+        emit log_named_decimal_uint("minute 0, snapshot wallet: YOLO for 5 IMD", got, 18);
         emit log_named_uint("  router buy gas (gate, first buy)", g);
         assertEq(IERC20(yolo).balanceOf(OWNER), ownerAtStart, "no tax in the whitelist window");
-        // the same holder through a route that takes the output to the router: refused, the router holds no NFT
+        // the same wallet through a route that takes the output to the router: refused, the router is not listed
         (ok,, ret,) = _urBuy(holder, 1e18, true);
         assertFalse(ok);
         assertEq(_innerReason(ret), abi.encodeWithSelector(YoloToken.NotWhitelisted.selector, address(UR)));
+        // a contract buying in between (it takes the YOLO itself to pass it on): refused
+        V4Buyer middle = new V4Buyer();
+        deal(LaunchPlan.IMD, address(middle), 5e18);
+        vm.expectRevert();
+        middle.buy(yolo, 5e18, address(middle));
         // above the 500,000 allowance of one NFT
         uint256 left = gate.left(yolo, holder);
         (ok,, ret,) = _urBuy(holder, 10e18, false);
@@ -625,25 +818,55 @@ contract LaunchRehearsalForkTest is Test {
         (, uint256 leftSaid,) = abi.decode(_tail(reason), (address, uint256, uint256));
         assertEq(leftSaid, left, "the error says what is left");
 
-        // a cold wallet delegates its NFT #1999 to a hot wallet (delegate.xyz v2, this token only); the hot one registers
-        vm.prank(cold);
-        DELEGATES.delegateERC721(hot, address(NFT), 1999, bytes32(0), true);
-        ids[0] = 1999;
-        vm.prank(hot);
-        g0 = gasleft();
-        gate.register(ids);
-        emit log_named_uint("register 1 NFT (delegate.xyz delegate) gas", g0 - gasleft());
-        assertEq(gate.boundTo(1999), hot);
-        (ok, got,,) = _urBuy(hot, 5e18, false);
-        assertTrue(ok, "the delegate's wallet buys");
+        // USDC -> IMD (v3) -> YOLO (v4) and ETH -> WETH -> USDC -> IMD (v3) -> YOLO (v4), one router call each, YOLO straight
+        // to the snapshot wallet
+        (ok, got,) = _urBuyRouted(second, false, 20e6, false);
+        assertTrue(ok, "USDC -> IMD -> YOLO in the window");
+        emit log_named_decimal_uint("minute 0, snapshot wallet: YOLO for 20 USDC via IMD", got, 18);
+        assertGt(got, 0);
+        (ok, got, ret) = _urBuyRouted(second, true, 0.001 ether, false);
+        if (!ok) emit log_named_bytes("ETH route revert", ret);
+        assertTrue(ok, "ETH -> IMD -> YOLO in the window");
+        emit log_named_decimal_uint("minute 0, snapshot wallet: YOLO for 0.001 ETH via IMD", got, 18);
+        assertGt(got, 0);
+        assertEq(IERC20(LaunchPlan.IMD).balanceOf(address(UR)), 0, "no IMD left in the router");
+        // the same route paying the router first: refused
+        (ok,, ret) = _urBuyRouted(second, false, 20e6, true);
+        assertFalse(ok, "USDC route through the router refused");
+        assertEq(_innerReason(ret), abi.encodeWithSelector(YoloToken.NotWhitelisted.selector, address(UR)));
 
-        // the NFT is bound for good: moved to someone else, it gives no second allowance
+        // minute 0: every sell pays 30%, the Stabilizer's for IMD and a snapshot wallet's
+        // YOLO -> IMD -> USDC, both through the Universal Router
+        _approveRouter(STABILIZER, yolo);
+        _taxedSell(STABILIZER, 100_000e18, vm.getBlockTimestamp() - openAt, "minute 0, Stabilizer");
+        _approveRouter(second, yolo);
+        {
+            uint256 yb = IERC20(yolo).balanceOf(second);
+            uint256 sIn = yb * 7_000 / 10_000; // 70% of the wallet into the pool, 30% tax: the most it can sell
+            uint256 safe0 = IERC20(yolo).balanceOf(OWNER);
+            uint256 usdcGot;
+            (ok, usdcGot, ret) = _urSellRouted(second, sIn);
+            if (!ok) emit log_named_bytes("YOLO -> IMD -> USDC revert", ret);
+            assertTrue(ok, "YOLO -> IMD -> USDC in the window");
+            uint256 sTax = sIn * 3_000 / 7_000;
+            assertEq(IERC20(yolo).balanceOf(OWNER) - safe0, sTax, "30% of what the wallet parted with");
+            assertEq(yb - IERC20(yolo).balanceOf(second), sIn + sTax);
+            assertGt(usdcGot, 0);
+            emit log_named_decimal_uint("minute 0, snapshot wallet sells YOLO", sIn + sTax, 18);
+            emit log_named_decimal_uint("  of it sell tax 30%", sTax, 18);
+            emit log_named_decimal_uint("  USDC received via IMD", usdcGot, 6);
+            // the whole wallet without room for the tax: refused
+            (ok,,) = _urSellRouted(second, IERC20(yolo).balanceOf(second));
+            assertFalse(ok, "a sell of the whole balance has no room for the tax");
+        }
+
+        // an NFT moved after the snapshot gives nothing: the bot gets #0, still refused; the holder keeps their allowance
         vm.prank(holder);
         NFT.transferFrom(holder, bot, 0);
-        ids[0] = 0;
-        vm.prank(bot);
-        vm.expectRevert(abi.encodeWithSelector(NftGate.AlreadyRegistered.selector, 0, holder));
-        gate.register(ids);
+        (ok,, ret,) = _urBuy(bot, 1e18, false);
+        assertFalse(ok);
+        assertEq(_innerReason(ret), abi.encodeWithSelector(YoloToken.NotWhitelisted.selector, bot));
+        assertEq(gate.allowanceOf(holder), gate.ALLOWANCE_PER_NFT());
 
         // the edge of minute 30
         _next(30 minutes - 1);
@@ -653,39 +876,135 @@ contract LaunchRehearsalForkTest is Test {
         _taxedBuy(bot, 50e18, 30 minutes, "minute 30");
         _next(45 minutes);
         _taxedBuy(bot, 50e18, 45 minutes, "minute 45");
-        // a sell is never taxed: a trader who bought in the tax window sells half of it; then the factory's fee
-        // claim in YOLO: exempt
-        _approveRouter(bot, yolo);
-        uint256 treasuryBefore = IERC20(yolo).balanceOf(OWNER);
-        uint256 traderBefore = IERC20(yolo).balanceOf(bot);
-        uint256 sold = traderBefore / 2;
-        assertGt(sold, 0);
-        _urSell(bot, sold);
-        assertEq(IERC20(yolo).balanceOf(bot), traderBefore - sold, "a sell is never taxed");
-        assertEq(IERC20(yolo).balanceOf(OWNER), treasuryBefore, "no tax on a sell");
+        // the Stabilizer sells at minute 45: 15%; then the factory's fee claim in YOLO: exempt
+        _taxedSell(STABILIZER, 2_500_000e18, 45 minutes, "minute 45, Stabilizer");
+        uint256 safeBefore = IERC20(yolo).balanceOf(OWNER);
         (uint256 f0, uint256 f1) = FACTORY.claimFees(LAUNCH_SUPPORT);
         emit log_named_uint("claimFees in the tax window, amount0", f0);
         emit log_named_uint("claimFees in the tax window, amount1", f1);
         uint256 yoloFee = LaunchPlan.IMD < yolo ? f1 : f0;
         assertGt(yoloFee, 0, "YOLO fees collected by the factory");
-        // the requester (the treasury, launch 1's payer) gets its 80% from the factory, untaxed
-        assertEq(IERC20(yolo).balanceOf(OWNER), treasuryBefore + yoloFee * 8_000 / 10_000, "the fee claim is untaxed");
+        // the requester (here the treasury stand-in, the launch payer of this rehearsal) gets its 80% from the factory, untaxed
+        assertEq(IERC20(yolo).balanceOf(OWNER), safeBefore + yoloFee * 8_000 / 10_000, "the fee claim is untaxed");
         _next(60 minutes - 1);
         _taxedBuy(bot, 50e18, 60 minutes - 1, "minute 59:59");
         _next(60 minutes);
-        uint256 treasuryNow = IERC20(yolo).balanceOf(OWNER);
+        uint256 safeNow = IERC20(yolo).balanceOf(OWNER);
         (ok, got,, g) = _urBuy(bot, 50e18, false);
         assertTrue(ok);
-        assertEq(IERC20(yolo).balanceOf(OWNER), treasuryNow, "minute 60: no tax, a plain ERC-20");
+        assertEq(IERC20(yolo).balanceOf(OWNER), safeNow, "minute 60: no tax, a plain ERC-20");
+        _taxedSell(STABILIZER, 1_000_000e18, 60 minutes, "minute 60, Stabilizer");
         emit log_named_uint("  router buy gas after minute 60", g);
+    }
+
+    /// @dev A swarm worker's YOLO: the live factory puts the swarm's 10% into
+    ///      its MerkleDistributor at launch 1; the worker claims their leaf with a real proof after the contributor lock
+    ///      (1 h, before openAt), sells through the Universal Router at minutes 0, 15, 45 and 60 (30% / 30% / 15% / 0
+    ///      of what they part with, to the treasury), passes YOLO to a fresh wallet untaxed, the fresh wallet sells at
+    ///      the same minutes with the same tax; the worker is not in the snapshot, so their buys in minutes 0-30 revert.
+    function test_swarmWorkerSellTax() public {
+        address worker = makeAddr("swarm worker");
+        address peer = makeAddr("swarm peer");
+        address fresh = makeAddr("fresh wallet");
+        uint256 aWorker = 1_000_000e18;
+        uint256 aPeer = 2_000_000e18;
+        // a two-leaf StandardMerkleTree: leaf = keccak(keccak(abi.encode(account, amount))), pairs hashed sorted
+        bytes32 lw = keccak256(bytes.concat(keccak256(abi.encode(worker, aWorker))));
+        bytes32 lp = keccak256(bytes.concat(keccak256(abi.encode(peer, aPeer))));
+        swarmRoot = lw < lp ? keccak256(abi.encode(lw, lp)) : keccak256(abi.encode(lp, lw));
+        _launchGenesis();
+        _launchSupportWithToken();
+        IMerkleDistributorMin dist = IMerkleDistributorMin(FACTORY.distributorOf(LAUNCH_SUPPORT));
+        assertGt(address(dist).code.length, 0, "the launch's distributor");
+        assertEq(IERC20(yolo).balanceOf(address(dist)), LaunchPlan.YOLO_SUPPLY / 10, "the swarm's 10% in the distributor");
+        assertEq(dist.roundCount(), 1);
+        emit log_named_address("swarm distributor (factory.distributorOf)", address(dist));
+        bytes32[] memory proof = new bytes32[](1);
+        proof[0] = lp;
+        // the contributor lock (1 h) holds the claim
+        vm.expectRevert();
+        dist.claim(0, worker, aWorker, proof);
+        vm.warp(vm.getBlockTimestamp() + 1 hours);
+        vm.roll(vm.getBlockNumber() + 300);
+        vm.prank(makeAddr("anyone")); // anyone may submit, the YOLO goes only to the leaf's account
+        dist.claim(0, worker, aWorker, proof);
+        assertEq(IERC20(yolo).balanceOf(worker), aWorker, "the worker claimed their leaf in full");
+        assertLt(vm.getBlockTimestamp(), openAt, "claimed before trading opens");
+
+        // the snapshot before openAt: one real identity.md holder (10 NFTs here, so the pool gets IMD to sell into)
+        address holder = NFT.ownerOf(0);
+        {
+            address[] memory w = new address[](1);
+            uint256[] memory n = new uint256[](1);
+            (w[0], n[0]) = (holder, 10);
+            vm.startPrank(TREASURY);
+            NftGate(genesis.gate).record(w, n);
+            NftGate(genesis.gate).seal(block.number);
+            vm.stopPrank();
+        }
+        deal(LaunchPlan.IMD, holder, 1_000e18);
+        _approveRouter(holder, LaunchPlan.IMD);
+        deal(LaunchPlan.IMD, worker, 1_000e18);
+        _approveRouter(worker, LaunchPlan.IMD);
+        _approveRouter(worker, yolo);
+        _approveRouter(fresh, yolo);
+
+        _next(0);
+        (bool ok, uint256 got, bytes memory ret,) = _urBuy(holder, 60e18, false);
+        assertTrue(ok, "a snapshot holder buys at minute 0");
+        emit log_named_decimal_uint("minute 0, snapshot holder: YOLO for 60 IMD", got, 18);
+        // the worker is not in the snapshot: their buy reverts in minutes 0-30
+        (ok,, ret,) = _urBuy(worker, 5e18, false);
+        assertFalse(ok, "worker buy at minute 0");
+        assertEq(_innerReason(ret), abi.encodeWithSelector(YoloToken.NotWhitelisted.selector, worker));
+
+        // the worker passes 400,000 YOLO to a fresh wallet inside the tax window: untaxed
+        uint256 t0 = IERC20(yolo).balanceOf(TREASURY);
+        vm.prank(worker);
+        IERC20(yolo).transfer(fresh, 400_000e18);
+        assertEq(IERC20(yolo).balanceOf(fresh), 400_000e18, "transfer between wallets: all of it arrives");
+        assertEq(IERC20(yolo).balanceOf(TREASURY), t0, "transfer between wallets: no tax");
+
+        _workerSell(worker, fresh, 0, 70_000e18, 3_000);
+        _next(15 minutes);
+        (ok,, ret,) = _urBuy(worker, 5e18, false);
+        assertFalse(ok, "worker buy at minute 15");
+        assertEq(_innerReason(ret), abi.encodeWithSelector(YoloToken.NotWhitelisted.selector, worker));
+        _workerSell(worker, fresh, 15 minutes, 70_000e18, 3_000);
+        _next(30 minutes - 1);
+        (ok,, ret,) = _urBuy(worker, 5e18, false);
+        assertFalse(ok, "worker buy at 29:59");
+        assertEq(_innerReason(ret), abi.encodeWithSelector(YoloToken.NotWhitelisted.selector, worker));
+        _next(45 minutes);
+        _workerSell(worker, fresh, 45 minutes, 85_000e18, 1_500);
+        _next(60 minutes);
+        _workerSell(worker, fresh, 60 minutes, 100_000e18, 0);
+    }
+
+    /// @dev At `e` after openAt the worker, then the fresh wallet, each sells `yoloIn` into the pool: the treasury gets
+    ///      exactly `bps` of what each parts with.
+    function _workerSell(address worker, address fresh, uint256 e, uint256 yoloIn, uint256 bps) internal {
+        address[2] memory who = [worker, fresh];
+        string[2] memory name = ["worker", "fresh wallet"];
+        for (uint256 i; i < 2; ++i) {
+            uint256 t0 = IERC20(yolo).balanceOf(TREASURY);
+            uint256 b0 = IERC20(yolo).balanceOf(who[i]);
+            string memory label = string.concat("minute ", vm.toString(e / 60), ", ", name[i]);
+            _taxedSell(who[i], yoloIn, e, label);
+            uint256 spent = b0 - IERC20(yolo).balanceOf(who[i]);
+            uint256 tax = IERC20(yolo).balanceOf(TREASURY) - t0;
+            assertEq(tax * 10_000, spent * bps, string.concat(label, ": exact share of what was parted with"));
+            emit log_named_decimal_uint(string.concat(label, ": parted with"), spent, 18);
+            emit log_named_uint(string.concat(label, ": tax bps of it"), spent == 0 ? 0 : tax * 10_000 / spent);
+        }
     }
 
     /// @dev A buy at `e` seconds after the opening: the treasury gets exactly 30% x (60 min - e) / 30 min of it.
     function _taxedBuy(address who, uint256 imdIn, uint256 e, string memory label) internal {
-        uint256 treasuryBefore = IERC20(yolo).balanceOf(OWNER);
+        uint256 safeBefore = IERC20(yolo).balanceOf(OWNER);
         (bool ok, uint256 got,, uint256 g) = _urBuy(who, imdIn, false);
         assertTrue(ok, label);
-        uint256 tax = IERC20(yolo).balanceOf(OWNER) - treasuryBefore;
+        uint256 tax = IERC20(yolo).balanceOf(OWNER) - safeBefore;
         uint256 gross = got + tax;
         assertEq(tax, gross * 3_000 * (60 minutes - e) / (10_000 * 30 minutes), "exact tax");
         emit log_named_decimal_uint(string.concat(label, ": buyer got"), got, 18);
@@ -700,65 +1019,63 @@ contract LaunchRehearsalForkTest is Test {
         }
     }
 
-    /// @dev The oracle samples the YOLO/IMD pool; a YOLO task is created from the vesting's unlocked part and gets
-    ///      an IMD Bond sized by that price.
-    function _yoloOracleAndTask(ITaskVault vault, ChainlinkUniV3PriceOracle oracle) internal {
-        assertFalse(oracle.hasPrice(yolo));
-        for (uint256 i; i < oracle.MIN_SAMPLES(); ++i) {
-            vm.prank(address(0x5EED), address(0x5EED)); // a keeper (anyone can run one), a plain EOA: a read ...
-            assertFalse(oracle.sampleYoloPrice());
-            vm.roll(vm.getBlockNumber() + 1);
-            vm.prank(address(0x5EED), address(0x5EED)); // ... stored a block later (swarm audit #1)
-            assertTrue(oracle.sampleYoloPrice());
-            vm.warp(vm.getBlockTimestamp() + oracle.SAMPLE_SPACING());
-            vm.roll(vm.getBlockNumber() + 75);
-        }
-        // the live Chainlink rounds are older than the warp now: read them as fresh
-        _freshChainlink(LaunchPlan.CL_USDC_USD);
-        _freshChainlink(LaunchPlan.CL_ETH_USD);
-        assertTrue(oracle.hasPrice(yolo));
-        uint256 usdPerMillion = oracle.usdValue(yolo, 1_000_000e18);
-        emit log_named_decimal_uint("USD per 1M YOLO (highest sample x IMD TWAP)", usdPerMillion, 18);
+    /// @dev DevPrices is a dev-set parameter, not an oracle: a price always exists from deployment;
+    ///      a YOLO task is created from the vesting's unlocked part; its doer bond (0.5 IMD fixed + 3% of R in
+    ///      $YOLO) reads no price.
+    function _yoloPriceAndTask(ITaskVault vault, DevPrices prices) internal {
+        assertTrue(prices.hasPrice(yolo));
+        uint256 usdPerMillion = prices.usdValue(yolo, 1_000_000e18);
+        emit log_named_decimal_uint("USD per 1M YOLO (DevPrices)", usdPerMillion, 18);
         assertGt(usdPerMillion, 0);
-        assertLe(usdPerMillion, 1_000_000 * LaunchPlan.YOLO_MAX_USD);
 
-        // through the live factory the splitter bound itself as the only clock starter (swarm audit #2)
+        // through the live factory the splitter bound itself as the only clock starter (swarm audit 117cf05a #2)
         assertEq(ProjectVesting(genesis.dev).starter(), genesis.splitter, "the splitter starts the dev clock");
         assertEq(ProjectVesting(genesis.treasury).starter(), genesis.splitter, "the splitter starts the treasury clock");
         ProjectVesting(genesis.dev).release(yolo); // the dev stream so far, to the dev
         assertGt(IERC20(yolo).balanceOf(DEV), 0);
-        uint256 r = 10_000_000e18;
-        // the project's own YOLO for a task: the incentives wallet creates it
+        uint256 r = 1_000_000e18; // ~$100 at the opening price
+        vm.prank(STABILIZER); // the project's own YOLO for a task: here from the Stabilizer wallet
+        IERC20(yolo).transfer(OWNER, r);
         address doer = makeAddr("yoloDoer");
         deal(LaunchPlan.IMD, doer, 100e18);
-        vm.deal(INCENTIVES, 1 ether);
-        vm.prank(INCENTIVES);
+        // the doer bond's rew part is paid in R's own currency (here $YOLO, 3% of r = 30,000e18): fund and
+        // approve it, same as the IMD fixed part below (a cap under this amount reverts CostAboveMax).
+        deal(yolo, doer, r * 300 / 10_000);
+        vm.deal(OWNER, 1 ether);
+        vm.prank(OWNER);
         IERC20(yolo).approve(address(vault), r);
         vm.prank(doer);
         IERC20(LaunchPlan.IMD).approve(address(vault), type(uint256).max);
+        vm.prank(doer);
+        IERC20(yolo).approve(address(vault), type(uint256).max);
         ImdPay memory none;
-        vm.prank(INCENTIVES);
-        uint256 taskId = vault.createTask{value: 0.0005 ether}(
-            yolo, r, 0, "YOLO task", "Post the doer code on X", 0, 3, "", 0.0005 ether, none
+        vm.prank(OWNER);
+        uint256 taskId = vault.createTask(
+            yolo, r, uint64(vm.getBlockTimestamp() + 7 days), "YOLO task", rulesOf("Post the doer code on X"), 0, 3, "", none
         );
         Evidence memory noEvidence;
+        // maxBondRew caps the bond's `rew` part (CostAboveMax otherwise), which is doerBondBps percent of R in R's
+        // own currency (Desk._doerBond) -- here 3% of 1,000,000 YOLO = 30,000 YOLO, not a USD figure.
         vm.prank(doer);
-        uint256 subId = vault.submit(taskId, "https://example.com/proof", noEvidence, r, 100e18, none);
+        uint256 subId = vault.submit(taskId, "https://github.com/proof", noEvidence, r, r, none);
         Submission memory sub = vault.getSubmission(subId);
-        emit log_named_decimal_uint("10M YOLO task: R in IMD", sub.rewardImd, 18);
-        emit log_named_decimal_uint("10M YOLO task: doer Bond, IMD", sub.bond, 18);
-        assertEq(sub.rewardImd, oracle.imdValue(yolo, r));
-        assertGe(sub.bond, 1e18);
-    }
-
-    /// @dev Chainlink's last round with the current block time (fork only: the test warped past the heartbeat).
-    function _freshChainlink(address feed) internal {
-        (uint80 id, int256 answer, uint256 startedAt,, uint80 answeredIn) = IAggregatorRound(feed).latestRoundData();
-        vm.mockCall(
-            feed,
-            abi.encodeWithSelector(IAggregatorRound.latestRoundData.selector),
-            abi.encode(id, answer, startedAt, vm.getBlockTimestamp(), answeredIn)
-        );
+        emit log_named_decimal_uint("1M YOLO task: R", r, 18);
+        emit log_named_decimal_uint("1M YOLO task: doer bond.rew, in YOLO", sub.bond.rew, 18);
+        // no oracle, no USD floor; the fixed part is a flat IMD parameter, the
+        // percent part is 3% of R in R's own currency ($YOLO here).
+        assertEq(sub.bond.imd, 0.5e18, "fixed part");
+        assertEq(sub.bond.rew, r * 300 / 10_000, "3% of R, in $YOLO itself");
+        // only the dev wallet cancels a task: the DevPrices owner is PROJECT_DEV, not the parameter owner
+        assertEq(prices.owner(), LaunchPlan.PROJECT_DEV, "DevPrices owner = the dev wallet");
+        address[2] memory notDev = [OWNER, doer];
+        for (uint256 i; i < notDev.length; ++i) {
+            vm.prank(notDev[i]);
+            vm.expectRevert(NotAuthorized.selector);
+            vault.cancelTask(taskId);
+        }
+        vm.prank(LaunchPlan.PROJECT_DEV);
+        vault.cancelTask(taskId);
+        assertEq(uint8(vault.getTask(taskId).status), uint8(TaskStatus.Unwound), "the dev wallet cancelled it");
     }
 
     // ------------------------------------------------------------------ the deployed vault works
@@ -776,23 +1093,29 @@ contract LaunchRehearsalForkTest is Test {
         IERC20(LaunchPlan.IMD).approve(address(vault), type(uint256).max);
 
         ImdPay memory none;
+        TaskRules memory rules = rulesOf("Post the doer code on X");
         vm.prank(author);
-        uint256 taskId = vault.createTask{value: 0.0005 ether}(
-            LaunchPlan.IMD, 10e18, 0, "Smoke", "Post the doer code on X", 0, 3, "", 0.0005 ether, none
+        uint256 taskId = vault.createTask(
+            LaunchPlan.IMD, 10e18, uint64(vm.getBlockTimestamp() + 7 days), "Smoke", rules, 0, 3, "", none
         );
         Evidence memory noEvidence;
         vm.prank(doer);
-        uint256 subId = vault.submit(taskId, "https://example.com/proof", noEvidence, 10e18, 100e18, none);
-        (bytes memory body,) = vault.previewSwarmBody(subId, 1);
+        uint256 subId = vault.submit(taskId, "https://github.com/proof", noEvidence, 10e18, 100e18, none);
+        (bytes memory body,) = vault.previewSwarmBody(
+            subId, 2, RuleTexts(rules.task, rules.proof, rules.noIf, "", "")
+        );
         assertGt(body.length, 300, "the question builder reads the launched desks");
         vm.warp(vm.getBlockTimestamp() + 25 hours);
         vault.poke(taskId);
         assertEq(uint8(vault.getSubmission(subId).outcome), uint8(Outcome.Accepted));
-        assertEq(vault.credits(LaunchPlan.IMD, doer), 9e18 + vault.getSubmission(subId).bond, "R - 10% fee + bond");
+        Bond memory bond = vault.getSubmission(subId).bond;
+        assertEq(
+            vault.credits(LaunchPlan.IMD, doer), 9e18 + bond.imd + bond.rew, "R - 10% fee + bond (reward currency is IMD)"
+        );
         uint256 before = IERC20(LaunchPlan.IMD).balanceOf(doer);
         vm.prank(doer);
         vault.withdraw(LaunchPlan.IMD);
-        assertEq(IERC20(LaunchPlan.IMD).balanceOf(doer) - before, 9e18 + vault.getSubmission(subId).bond);
+        assertEq(IERC20(LaunchPlan.IMD).balanceOf(doer) - before, 9e18 + bond.imd + bond.rew);
         assertEq(IERC20(LaunchPlan.IMD).balanceOf(address(vault)), vault.liabilities(LaunchPlan.IMD), "money invariant");
     }
 

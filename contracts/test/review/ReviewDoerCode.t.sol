@@ -3,17 +3,16 @@ pragma solidity ^0.8.28;
 
 import "../Base.t.sol";
 
-/// @dev Binding a proof to its doer via `DOER CODE`: a code made of the first 6 hex of the address (24 bits, a
-///      vanity tool grinds such an address in seconds) would let a thief submit someone else's post first with the
-///      same code. The rule: code = `IMD-<task>-<full doer address, 0x + 40 lowercase hex>`, byte for byte as a client
-///      builds doerCode. Tests: the code carries the whole address, addresses sharing
-///      6 (even 39) hex give different codes, the swarm question on the thief's submission carries his own code, which
-///      the honest doer's post does not contain.
+/// @dev The proof is bound to the doer via `DOER CODE` = `IMD-<task>-<doer's full address, 0x + 40 hex
+///      lowercase>` (a short prefix of the address could be matched with a vanity tool in seconds, so a thief
+///      could submit someone else's post first with the same code). Tests: the code carries the whole
+///      address, addresses sharing 6 (or even 39) hex get different codes, the swarm question for the thief's
+///      submission carries their own code, which is not even a substring in the honest post.
 contract ReviewDoerCode is Base {
-    // Two different addresses with the same first 6 hex ("abcdef"): with a 6-hex code their codes matched.
+    // Two different addresses with the same first 6 hex ("abcdef"): a 6-hex code would collide.
     address internal honest = 0xabCDEf1111111111111111111111111111111111;
     address internal thief = 0xaBcdef2222222222222222222222222222222222;
-    // Matches the honest one in everything but the last hex: impossible to grind, but it does not pass either.
+    // Matches the honest address in everything but the last hex: not findable in practice, and it still fails.
     address internal twin = 0xAbCDEf1111111111111111111111111111111112;
 
     string internal constant COND = "Post a thread on X about IMD with the doer code in the last post";
@@ -29,16 +28,19 @@ contract ReviewDoerCode is Base {
     function _task() internal returns (uint256) {
         vm.prank(author);
         return vault.createTask{value: 0.001 ether}(
-            address(usdc), 50e6, 0, "Thread about IMD", COND, 1, PROOF_X_POST, "", 0.001 ether, _noSwap()
+            address(usdc), 50e6, uint64(_now() + TTL), "Thread about IMD", rulesOf(COND), 1, PROOF_X_POST, "", _noSwap()
         );
     }
 
+    string internal constant _SCREENSHOT = "https://i.imgur.com/screenshot.png";
+
     function _submitAs(address who, uint256 t) internal returns (uint256) {
         vm.prank(who);
-        return vault.submit(t, PROOF, _noEvidence(), 0, type(uint256).max, _noSwap());
+        // this task is PROOF_X_POST, a screenshot is mandatory.
+        return vault.submit(t, PROOF, Evidence(_SCREENSHOT, ""), 0, type(uint256).max, _noSwap());
     }
 
-    /// @dev Code = task number and the whole doer address in lowercase, with 0x.
+    /// @dev Code = the task number and the doer's whole address lowercase, with 0x.
     function test_DoerCodeIsTheWholeAddress() public {
         uint256 t = _task();
         uint256 s = _submitAs(honest, t);
@@ -47,7 +49,7 @@ contract ReviewDoerCode is Base {
         );
     }
 
-    /// @dev Shared first 6 hex (even 39 of 40) no longer give a shared code.
+    /// @dev Sharing the first 6 hex (or even 39 of 40) gives no shared code.
     function test_DoerCodeDiffersForAddressesSharingSixHex() public {
         bytes memory codeHonest = _codeOf(_submitAs(honest, _task()));
         bytes memory codeThief = _codeOf(_submitAs(thief, _task()));
@@ -59,9 +61,10 @@ contract ReviewDoerCode is Base {
         assertEq(string(_tail(codeTwin)), "-0xabcdef1111111111111111111111111111111112");
     }
 
-    /// @dev A thief (first 6 hex match, the address does not) submitted the same link first: the swarm question has
-    ///      his own code, while the honest doer's post has the honest code, which does not contain the thief's code even
-    ///      as a substring. By the rule of the preamble ("the whole DOER CODE, a part does not count") the panel says "no".
+    /// @dev The thief (first 6 hex match, the address does not) submits the same link first: the swarm question
+    ///      carries their own code, while the honest doer's post carries the honest code, where the thief's code
+    ///      is not even a substring. By the rule in the prompt ("the whole DOER CODE, a part does not count") the
+    ///      panel answers "no".
     function test_ThiefQuestionCarriesThiefCode() public {
         uint256 t = _task();
         uint256 stolen = _submitAs(thief, t);
@@ -91,8 +94,12 @@ contract ReviewDoerCode is Base {
 
     // ================================================================== helpers
 
+    /// @dev Every task here is `_task()` = `rulesOf(COND)`; the dispute reason/proof only matter once a dispute
+    ///      was actually filed (the hash check is skipped with none), so passing DISPUTE_REASON/DISPUTER_PROOF
+    ///      unconditionally is safe for both the undisputed and the disputed call sites below.
     function _question(uint256 subId) internal view returns (bytes memory q) {
-        (bytes memory body,) = vault.previewSwarmBody(subId, 2);
+        (bytes memory body,) =
+            vault.previewSwarmBody(subId, 2, RuleTexts(COND, TEST_RULE_PROOF, TEST_RULE_NO, DISPUTE_REASON, DISPUTER_PROOF));
         bytes memory head = '{"v":1,"question":"';
         uint256 i = head.length;
         while (body[i] != '"') ++i;
@@ -102,7 +109,7 @@ contract ReviewDoerCode is Base {
         }
     }
 
-    /// @dev `IMD-<task>-0x<40 hex>` from the submission's question.
+    /// @dev `IMD-<task>-0x<40 hex>` from the submission's swarm question.
     function _codeOf(uint256 subId) internal view returns (bytes memory) {
         bytes memory q = _question(subId);
         bytes memory mark = "DOER CODE: ";

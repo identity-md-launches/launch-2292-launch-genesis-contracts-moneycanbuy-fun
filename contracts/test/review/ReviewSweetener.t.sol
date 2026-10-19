@@ -4,21 +4,15 @@ pragma solidity ^0.8.28;
 import {Test, console} from "forge-std/Test.sol";
 
 import {Base} from "../Base.t.sol";
-import {MockPoolManager, MockFeed, MockV3Pool} from "../YoloOracle.t.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
 import {YoloSweetener} from "../../src/YoloSweetener.sol";
 import {ITaskVault} from "../../src/interfaces/ITaskVault.sol";
-import {IPriceOracle} from "../../src/interfaces/IPriceOracle.sol";
-import {
-    ChainlinkUniV3PriceOracle,
-    IAggregatorV3,
-    IUniswapV3PoolObserve
-} from "../../src/oracles/ChainlinkUniV3PriceOracle.sol";
+import {TaskVault} from "../../src/TaskVault.sol";
 import "../../src/VaultTypes.sol";
+import {rulesOf, rulesForehead, rulesSupermarket, TEST_RULE_PROOF, TEST_RULE_NO} from "../mocks/TaskRulesFixture.sol";
 
-/// @dev YoloSweetener (a $YOLO bonus on top of a task) and the vault's handling of the YOLO price.
-///      `test_Fixed_*` check a rule that closes a weakness; `test_Guard_*` hold properties that were checked and
-///      found sound; `test_Observation_*` pin a documented low-severity property.
+/// @dev "Sweeten and the YOLO price" (YoloSweetener).
+/// `test_Guard_*` hold what was checked and found sound.
 contract ReviewSweetenerTest is Base {
     uint8 internal constant REJECT = 2;
 
@@ -27,61 +21,62 @@ contract ReviewSweetenerTest is Base {
         sweetener.sweeten(taskId, amount);
     }
 
-    /// The bonus is invisible to the vault, so a $25 ETH task with a $90,000 YOLO bonus is a "small" task (Bond
-    /// 1 IMD, no swarm check). The rule that makes this safe: the vault sizes the submission on the reward alone,
-    /// but `payout` pays a bonus above the large threshold only to a
-    /// submission the swarm confirmed. Unconfirmed, the doer gets the threshold's worth ($300 = 3M YOLO at $0.0001,
-    /// minus the 10% fee) and the rest goes back to the sweetener.
-    function test_Fixed_S1_bonusAboveTheLargeThresholdNeedsTheSwarm() public {
-        uint256 bonus = 900_000_000e18; // $90,000 at $0.0001
+    /// No mandatory swarm check
+    /// and no cap at all: the whole bonus goes by the
+    /// reward's rule, uncapped, neither alone nor combined with the reward. The
+    /// bond counts the add-on separately, in $YOLO itself, not merged in USD with the reward: 3% of the $25 ETH
+    /// reward plus, on its own, 3% of the $YOLO add-on.
+    function test_Rule_AddonBondsSeparatelyInYolo_NoCap() public {
+        uint256 tBig = _create(author, ETH, 0.01 ether); // $25
+        vm.prank(alice);
+        sweetener.sweeten(tBig, 900_000_000e18); // $90,000: no cap at all, not even combined with the reward
+        assertEq(sweetener.bonusOf(tBig), 900_000_000e18);
+
         uint256 t = _create(author, ETH, 0.01 ether); // $25
+        uint256 bonus = 9_750_000e18; // $975 on a $25 task: no combined limit
         _sweeten(alice, t, bonus);
+        vm.prank(bob);
+        sweetener.sweeten(t, 1e18); // no cap: a further top-up goes through too
+        bonus += 1e18;
 
         uint256 s = _submit(doer, t);
         Submission memory sub = _sub(s);
-        assertFalse(sub.large, "the vault still sees a $25 task");
-        assertEq(uint8(sub.check), uint8(CheckState.None), "no swarm check");
-        assertEq(sub.bond, 1e18, "minimum Bond");
+        assertEq(sub.addon, bonus, "the vault sees the $975 add-on");
+        assertEq(sub.bond.imd, _fixedBond());
+        assertEq(sub.bond.rew, _bondOf(0.01 ether), "3% of the ETH reward, in ETH");
+        // the add-on is no part of the bond, whatever its size
+        assertEq(sub.request, bytes32(0), "no swarm question");
 
         vm.warp(sub.windowEnd);
         vault.poke(t);
         uint256 before = yolo.balanceOf(doer);
+        uint256 dead0 = yolo.balanceOf(address(burner));
         vm.expectEmit(address(sweetener));
-        emit YoloSweetener.BonusCapped(t, 3_000_000e18, bonus - 3_000_000e18);
-        sweetener.payout(t, s);
-        assertEq(yolo.balanceOf(doer) - before, 2_700_000e18, "fixed: $300 of it, minus the fee");
-        assertEq(yolo.balanceOf(treasury), 300_000e18, "the fee on what the doer got");
-        assertEq(sweetener.bonusOf(t), bonus - 3_000_000e18, "the rest waits for the sweetener");
+        emit YoloSweetener.BonusPaid(t, s, doer, 8_775_000.9e18, 0, 975_000.1e18);
+        sweetener.payout(t);
+        assertEq(yolo.balanceOf(doer) - before, 8_775_000.9e18, "90% of all of it");
+        assertEq(yolo.balanceOf(address(burner)) - dead0, 975_000.1e18, "the fee burned");
+        assertEq(sweetener.bonusOf(t), 0, "nothing waits for the sweetener");
         vm.expectRevert(YoloSweetener.NothingToPay.selector);
-        sweetener.payout(t, s);
-        uint256 aliceBefore = yolo.balanceOf(alice);
+        sweetener.payout(t);
         vm.prank(alice);
+        vm.expectRevert(YoloSweetener.BonusLocked.selector);
         sweetener.withdraw(t);
-        assertEq(yolo.balanceOf(alice) - aliceBefore, 897_000_000e18, "back to the sweetener, no notice needed");
         _claimEverythingAndCheck();
     }
 
-    /// A sweetener must not pull the bonus in the doer's block, right before the submission. The rule: leaving an
-    /// open task takes an hour of public notice; a doer who submits within that hour
-    /// locks the bonus with his submission and is paid it.
-    function test_Fixed_S2_bonusCannotBePulledWithoutNotice() public {
+    /// The bonus is locked like the reward, so there is nothing to pull at all
+    /// before the deadline; the doer gets the bonus they saw.
+    function test_Guard_bonusCannotBePulledBeforeTheDeadline() public {
         uint256 t = _create(author, ETH, 0.01 ether);
-        _sweeten(alice, t, 2_000_000e18); // $200: below the large threshold
+        _sweeten(alice, t, 2_000_000e18);
         assertEq(sweetener.bonusOf(t), 2_000_000e18, "what the doer sees on the card");
 
         vm.prank(alice); // ahead of the doer's transaction: refused
-        vm.expectRevert(YoloSweetener.NoNotice.selector);
-        sweetener.withdraw(t);
-        vm.prank(alice);
-        sweetener.announceWithdraw(t);
-        (uint256 leaving, uint64 from,) = sweetener.pendingWithdraw(t, alice);
-        assertEq(leaving, 2_000_000e18, "the card shows the bonus leaving");
-        assertEq(from, _now() + 1 hours);
-        vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(YoloSweetener.NoticeNotDue.selector, from));
+        vm.expectRevert(YoloSweetener.BonusLocked.selector);
         sweetener.withdraw(t);
 
-        uint256 s = _submit(doer, t); // the doer submits within the hour
+        uint256 s = _submit(doer, t);
         _warp(1 hours);
         vm.prank(alice);
         vm.expectRevert(YoloSweetener.BonusLocked.selector);
@@ -89,19 +84,24 @@ contract ReviewSweetenerTest is Base {
         vm.warp(_sub(s).windowEnd);
         vault.poke(t);
         uint256 before = yolo.balanceOf(doer);
-        sweetener.payout(t, s);
-        assertEq(yolo.balanceOf(doer) - before, 1_800_000e18, "fixed: the doer gets the bonus he saw");
+        sweetener.payout(t);
+        assertEq(yolo.balanceOf(doer) - before, 1_800_000e18, "the doer gets the bonus he saw, minus the fee");
         _claimEverythingAndCheck();
     }
 
-    /// The module reads the stored status; it plays no timers. Nothing gets stuck because of that: an expired but
-    /// not yet poked task is still withdrawable (Open, nothing active), an acceptance not yet played keeps the bonus
-    /// locked (Open, active) and payout works right after a poke.
-    function test_Guard_S3_lazyStatusNeverStrandsTheBonus() public {
+    /// The module plays the task's timers first
+    /// (`vault.poke`, like TaskVault.topUp), so it never acts on a stale stored status. Past the deadline but not
+    /// yet poked: nobody adds, everyone takes his own back. Accepted by the timer but not yet played: no new add-on
+    /// gets in (the task is decided), nobody takes his back, and the payout works without a separate poke.
+    function test_Guard_sweetenPlaysTheTimersFirst_NoAddonIntoADecidedTask() public {
         uint256 d = _createWithDeadline(author, ETH, 0.01 ether, uint64(_now() + 1 days));
-        _warp(1 days + 1);
-        _sweeten(alice, d, 10e18); // effectively expired, stored Open: accepted, harmless
-        vm.prank(alice); // past the deadline nobody can submit: no notice needed
+        _sweeten(alice, d, 10e18);
+        _warp(1 days + 1); // effectively expired, stored Open
+        assertEq(uint8(vault.getTask(d).status), uint8(TaskStatus.Open), "stored status still Open");
+        vm.prank(alice);
+        vm.expectRevert(YoloSweetener.TaskNotOpen.selector);
+        sweetener.sweeten(d, 10e18); // past the deadline nobody adds
+        vm.prank(alice);
         sweetener.withdraw(d);
         assertEq(sweetener.bonusOf(d), 0);
 
@@ -109,20 +109,25 @@ contract ReviewSweetenerTest is Base {
         _sweeten(alice, t, 10e18);
         uint256 s = _submit(doer, t);
         vm.warp(_sub(s).windowEnd + 1); // accepted by the timer, not played yet
+        assertEq(uint8(vault.getTask(t).status), uint8(TaskStatus.Open), "stored status still Open");
+        vm.prank(bob);
+        vm.expectRevert(YoloSweetener.TaskNotOpen.selector);
+        sweetener.sweeten(t, 5e18); // the task is decided: no new add-on (and no top-up either)
+        vm.prank(bob);
+        vm.expectRevert(TaskNotOpen.selector);
+        vault.topUp{value: 0.001 ether}(t, 0.001 ether, _noSwap());
         vm.prank(alice);
         vm.expectRevert(YoloSweetener.BonusLocked.selector);
         sweetener.withdraw(t);
-        vm.expectRevert(YoloSweetener.NotAccepted.selector);
-        sweetener.payout(t, s);
-        vault.poke(t);
-        sweetener.payout(t, s);
+        sweetener.payout(t); // plays the acceptance itself
         assertEq(yolo.balanceOf(address(sweetener)), 0);
         _claimEverythingAndCheck();
     }
 
     /// A rejected submission with one queued behind it: the vault activates the next one in the same transaction,
-    /// so there is no moment with the task open and idle, and the bonus goes to the second doer only.
-    function test_Guard_S4_rejectionWithAQueueLeavesNoWithdrawGap() public {
+    /// so there is no moment with the task open and idle, and the bonus goes to the second doer only (the payout
+    /// takes the accepted submission from the task).
+    function test_Guard_rejectionWithAQueueLeavesNoWithdrawGap() public {
         uint256 t = _create(author, ETH, 0.01 ether);
         _sweeten(alice, t, 1_000e18);
         uint256 s1 = _submit(doer, t);
@@ -137,53 +142,61 @@ contract ReviewSweetenerTest is Base {
         vm.prank(alice);
         vm.expectRevert(YoloSweetener.BonusLocked.selector);
         sweetener.withdraw(t);
+        vm.expectRevert(YoloSweetener.NotAccepted.selector);
+        sweetener.payout(t); // s2 under review
 
         vm.warp(_sub(s2).windowEnd);
         vault.poke(t);
-        vm.expectRevert(YoloSweetener.NotAccepted.selector);
-        sweetener.payout(t, s1); // the rejected one
+        assertEq(vault.getTask(t).activeSub, s2);
         uint256 before = yolo.balanceOf(doer2);
-        sweetener.payout(t, s2);
+        uint256 before1 = yolo.balanceOf(doer);
+        sweetener.payout(t);
         assertEq(yolo.balanceOf(doer2) - before, 900e18);
+        assertEq(yolo.balanceOf(doer), before1, "the rejected doer gets nothing");
         vm.expectRevert(YoloSweetener.NothingToPay.selector);
-        sweetener.payout(t, s2);
+        sweetener.payout(t);
         _claimEverythingAndCheck();
     }
 
     /// Re-entry from the only push in a submission (the excess-ETH refund, sent while the vault holds its lock):
-    /// the doer's contract sees the task open and busy, `withdraw` is locked and `payout` refused; the bonus stays.
-    function test_Guard_S5_reentryFromTheEthRefundIsLocked() public {
+    /// `withdraw` and `payout` both play the timers first (`vault.poke`), which the vault's lock refuses inside
+    /// the refund; the bonus stays.
+    function test_Guard_reentryFromTheEthRefundIsLocked() public {
         uint256 t = _create(author, ETH, 0.01 ether);
         ReentrantDoer bad = new ReentrantDoer(vault, sweetener, t);
         imd.mint(address(bad), 100e18);
+        // he needs 1,000e18 to sweeten; his doer bond has no $YOLO part
         yolo.mint(address(bad), 1_000e18);
         bad.prepare(address(imd), address(yolo));
         bad.sweetenAndSubmit{value: 1 ether}(1_000e18); // all of the ETH comes back: refunded by a push
-        assertEq(bad.withdrawError(), YoloSweetener.BonusLocked.selector, "withdraw inside the refund: locked");
-        assertEq(bad.payoutError(), YoloSweetener.NotAccepted.selector, "payout inside the refund: refused");
+        assertEq(bad.withdrawError(), TaskVault.ReentrancyGuardReentrantCall.selector, "withdraw inside the refund: locked");
+        assertEq(bad.payoutError(), TaskVault.ReentrancyGuardReentrantCall.selector, "payout inside the refund: refused");
         assertEq(sweetener.bonusOf(t), 1_000e18);
         assertEq(yolo.balanceOf(address(sweetener)), 1_000e18);
 
         vm.warp(_sub(bad.subId()).windowEnd);
         vault.poke(t);
-        sweetener.payout(t, bad.subId());
+        uint256 dead0 = yolo.balanceOf(address(burner));
+        sweetener.payout(t);
         assertEq(yolo.balanceOf(address(bad)), 900e18, "paid once, 10% fee");
-        assertEq(yolo.balanceOf(treasury), 100e18);
+        assertEq(yolo.balanceOf(address(burner)) - dead0, 100e18, "the fee burned");
+        assertEq(yolo.balanceOf(treasury), 0);
     }
 
-    /// The constructor takes no `registry` or `yolo` argument to trust: the module takes only the vault and reads the vault's registry, $YOLO and CaseDesk, so no launch argument can give
-    /// it a foreign token or another registry's treasury.
-    function test_Fixed_S3_moduleTakesTokenAndRegistryFromTheVault() public {
+    /// The module takes only the vault and reads the vault's registry and $YOLO (no CaseDesk link), so no
+    /// launch argument can give it a foreign token or another registry's treasury.
+    function test_Guard_moduleTakesTokenAndRegistryFromTheVault() public {
         YoloSweetener fresh = new YoloSweetener(address(vault));
         assertEq(address(fresh.yolo()), vault.yolo(), "the vault's YOLO");
         assertEq(address(fresh.registry()), vault.registry(), "the vault's registry");
-        assertEq(address(fresh.caseDesk()), address(caseDesk), "the vault's CaseDesk");
+        assertEq(address(fresh.vault()), address(vault));
         vm.expectRevert(YoloSweetener.ZeroAddress.selector);
         new YoloSweetener(address(0));
     }
 
-    /// Payout after the tie rule (no NFT decision, nobody called the swarm: accepted) works like any acceptance.
-    function test_Guard_S6_tieAcceptancePaysTheBonus() public {
+    /// Payout after the tie rule (no NFT decision, nobody called the swarm: accepted) works like any acceptance; the
+    /// NFT decided nothing, so its 5% burns with the rest of the fee.
+    function test_Guard_tieAcceptancePaysTheBonus() public {
         uint256 t = _create(author, ETH, 0.01 ether);
         _sweeten(bob, t, 100e18);
         uint256 s = _submit(doer, t);
@@ -193,8 +206,12 @@ contract ReviewSweetenerTest is Base {
         _warp(24 hours); // nobody called the swarm
         vault.poke(t);
         assertEq(uint8(_sub(s).outcome), uint8(Outcome.Accepted));
-        sweetener.payout(t, s);
+        uint256 d0 = yolo.balanceOf(doer);
+        uint256 dead0 = yolo.balanceOf(address(burner));
+        sweetener.payout(t);
         assertEq(sweetener.bonusOf(t), 0);
+        assertEq(yolo.balanceOf(doer) - d0, 90e18);
+        assertEq(yolo.balanceOf(address(burner)) - dead0, 10e18);
         _claimEverythingAndCheck();
     }
 }
@@ -218,6 +235,8 @@ contract ReentrantDoer {
     function prepare(address imd, address yolo) external {
         MockERC20(imd).approve(address(vault), type(uint256).max);
         MockERC20(yolo).approve(address(sw), type(uint256).max);
+        // (an allowance to the vault too: no bond has an add-on part, so the vault pulls no $YOLO)
+        MockERC20(yolo).approve(address(vault), type(uint256).max);
     }
 
     function sweetenAndSubmit(uint256 amount) external payable {
@@ -225,7 +244,7 @@ contract ReentrantDoer {
         armed = true;
         ImdPay memory none;
         subId = vault.submit{value: msg.value}(
-            taskId, "https://x.com/doer/status/1", Evidence(bytes32(0), false, ""), 0, type(uint256).max, none
+            taskId, "https://x.com/doer/status/1", Evidence("", ""), 0, type(uint256).max, none
         );
         armed = false;
     }
@@ -237,193 +256,49 @@ contract ReentrantDoer {
         catch (bytes memory e) {
             withdrawError = bytes4(e);
         }
-        try sw.payout(taskId, vault.submissionCount()) {}
+        try sw.payout(taskId) {}
         catch (bytes memory e) {
             payoutError = bytes4(e);
         }
     }
 }
 
-/// @dev What the vault does with every state of the YOLO price (mock oracle unless stated).
+/// @dev What the vault does with every state of the YOLO price (MockPriceOracle as DevPrices).
+/// There is no oracle: DevPrices is a dev parameter, not a sampled TWAP, so there is no sample window or floor
+/// to attack, and the bond never reads a price at all.
 contract ReviewYoloStrictTest is Base {
-    /// A price pushed down by one sample (a sell-sample-buy-back bundle) must not make 2M YOLO a small task with
-    /// the minimum Bond and no check. The rule: the oracle values YOLO at the HIGHEST sample of the window. Here the real oracle replaces the mock
-    /// (same address, so the registry's parameters point at it): five samples at 10x the opening price, then the
-    /// attacker's sample at the bottom tick; the submission stays large with the same Bond and the check.
-    function test_Fixed_S4_aCrashedSampleNoLongerStripsTheCheck() public {
-        uint256 R = 2_000_000e18;
-        uint256 t = _create(author, address(yolo), R); // created under the mock price: $200
-        _realOracle();
-        for (uint256 i; i < 5; ++i) {
-            _sampleAt(-88_053); // 10x the opening price: 2M YOLO = 300 IMD = $2,400
-        }
-        uint256 snap = vm.snapshotState();
-        uint256 s1 = _submit(doer, t);
-        Submission memory honest = _sub(s1);
-        vm.revertToState(snap);
-
-        _sampleAt(-887_220); // swap down, sample, swap back
-        (, int24 lowest) = ChainlinkUniV3PriceOracle(address(oracle)).lowestYoloTick();
-        assertEq(lowest, -887_220, "the crashed sample is in the window");
-        uint256 s2 = _submit(doer, t);
-        Submission memory attacked = _sub(s2);
-        console.log("bond honest / after the crashed sample", honest.bond, attacked.bond);
-        assertTrue(honest.large && attacked.large, "fixed: still large");
-        assertEq(attacked.bond, honest.bond, "fixed: the same Bond");
-        assertEq(attacked.rewardImd, honest.rewardImd);
-        assertEq(uint8(attacked.check), uint8(CheckState.Requested), "fixed: the check is asked");
-    }
-
-    /// @dev The launch oracle (ChainlinkUniV3PriceOracle, opening price 15,000 IMD per 1B, cap $0.01) etched over the
-    ///      mock at the mock's address; ETH $2,500, IMD $8 as in Base.
-    function _realOracle() internal {
-        MockV3Pool v3 = new MockV3Pool();
-        if (address(usdc) > address(imd)) vm.store(address(v3), 0, bytes32(uint256(uint24(int24(-255_529)))));
-        pm = new MockPoolManager();
-        ChainlinkUniV3PriceOracle real = new ChainlinkUniV3PriceOracle(
-            address(usdc),
-            address(imd),
-            IAggregatorV3(address(new MockFeed(2500e8))),
-            IAggregatorV3(address(new MockFeed(1e8))),
-            IUniswapV3PoolObserve(address(v3)),
-            1800,
-            2 hours,
-            48 hours,
-            address(yolo),
-            address(pm),
-            address(0x784),
-            12_500,
-            60,
-            0.01e18,
-            15_000e18 * 1e18 / 1_000_000_000e18
-        );
-        vm.etch(address(oracle), address(real).code);
-        assertApproxEqRel(IPriceOracle(address(oracle)).usdValue(address(imd), 1e18), 8e18, 0.001e18, "IMD $8");
-    }
-
-    MockPoolManager pm;
-
-    function _sampleAt(int24 tick) internal {
-        ChainlinkUniV3PriceOracle o = ChainlinkUniV3PriceOracle(address(oracle));
-        int24 yoloTick = address(yolo) < address(imd) ? tick : -tick;
-        pm.setTick(o.yoloPoolId(), yoloTick);
-        vm.prank(address(0x5EED), address(0x5EED));
-        assertFalse(o.sampleYoloPrice()); // the read; stored in a later block (swarm audit #1)
-        vm.roll(vm.getBlockNumber() + 1);
-        vm.prank(address(0x5EED), address(0x5EED));
-        assertTrue(o.sampleYoloPrice());
-        _warp(15 minutes);
-    }
-
-    /// The price vanishing between the doer's quote and his transaction cannot surprise him: the task turns large
-    /// and `maxImdIn` (the quote) stops the submission.
-    function test_Guard_S5_priceVanishingAfterTheQuoteIsCaughtByMaxImdIn() public {
-        uint256 t = _create(author, address(yolo), 1_000_000e18); // $100 at the Base price: small
-        (uint256 bond, uint256 checkFee) = vault.quoteSubmission(t);
-        assertEq(checkFee, 0);
-        oracle.set(address(yolo), 0, 18); // too few samples now
+    /// The bond needs no oracle at all, so a vanished (or never set) $YOLO price
+    /// cannot surprise the doer; his quote holds whatever DevPrices does meanwhile.
+    function test_Guard_PriceVanishingAfterTheQuoteDoesNotAffectTheSubmission() public {
+        uint256 t = _create(author, address(yolo), 1_000_000e18); // $100 at the Base price
+        Bond memory bond = vault.quoteSubmission(t);
+        assertEq(bond.rew, _bondOf(1_000_000e18), "3% of R, in $YOLO itself: no USD floor");
+        oracle.set(address(yolo), 0, 18); // the dev never set a price for it
         vm.prank(doer);
-        vm.expectRevert(CostAboveMax.selector);
-        vault.submit(t, "https://x.com/doer/status/1", _noEvidence(), 0, bond, _noSwap());
-        uint256 s = _submit(doer, t); // without a cap: large, threshold Bond, check asked
-        assertTrue(_sub(s).large);
-        assertEq(uint8(_sub(s).check), uint8(CheckState.Requested));
-        assertEq(_sub(s).rewardImd, 40e18, "valued at the large threshold");
+        uint256 s = vault.submit(t, "https://x.com/doer/status/1", _noEvidence(), 0, bond.rew, _noSwap());
+        assertEq(_sub(s).bond.rew, bond.rew);
     }
 
-    /// Partial oracle failures: price known but one read reverting = large, the IMD value never below the
-    /// threshold; an IMD value read that works is kept when it is higher.
-    function test_Guard_S6_partialOracleFailureIsLarge() public {
+    /// The bond reads
+    /// no price, so a DevPrices that reverts still lets a submission through unaffected.
+    function test_Guard_RevertingDevPricesDoesNotAffectTheSubmission() public {
         uint256 t = _create(author, address(yolo), 1_000_000e18);
-        vm.mockCallRevert(address(oracle), abi.encodeWithSelector(IPriceOracle.usdValue.selector), "down");
-        uint256 s = _submit(doer, t);
-        assertTrue(_sub(s).large, "usdValue reverting: large");
-        assertEq(_sub(s).rewardImd, 40e18);
+        vm.mockCallRevert(address(oracle), abi.encodeWithSignature("usdValue(address,uint256)"), "down");
+        uint256 s = _submit(doer, t); // no revert: the bond quote never calls usdValue
         vm.clearMockedCalls();
-
-        uint256 big = _create(author, address(yolo), 900_000_000e18); // $90,000 = 11,250 IMD
-        vm.mockCallRevert(address(oracle), abi.encodeWithSelector(IPriceOracle.usdValue.selector), "down");
-        uint256 s2 = _submit(doer2, big);
-        assertEq(_sub(s2).rewardImd, 11_250e18, "a priced IMD value above the threshold is kept");
-        vm.clearMockedCalls();
+        assertEq(_sub(s).reward, 1_000_000e18);
+        assertEq(_sub(s).bond.rew, _bondOf(1_000_000e18));
     }
 
-    /// Observation (documented, low/info): the $5 minimum reward is checked only at creation and only when the
-    /// YOLO price is known. A $YOLO task created while YOLO is unpriced can carry 1 wei; once the price appears, a
-    /// submission to it is small (minimum Bond, no swarm check), while a new 1-wei task is refused. Nothing of
-    /// value is at stake in such a task; the author fee is its only cost.
-    function test_Observation_S7_unpricedCreationSkipsTheMinimumForever() public {
+    /// Creation needs no price at all: the minimum is the fixed
+    /// minRewardYolo = 1000e18, price or not.
+    function test_Guard_creationNeedsNoPrice() public {
+        uint64 dl = uint64(_now() + 1 days);
         oracle.set(address(yolo), 0, 18);
-        uint256 t = _create(author, address(yolo), 1);
-        oracle.set(address(yolo), 0.0001e18, 18);
-        uint256 s = _submit(doer, t);
-        assertFalse(_sub(s).large);
-        assertEq(_sub(s).bond, 1e18);
-        uint256 value = 0.001 ether;
-        vm.prank(alice);
+        vm.prank(author);
         vm.expectRevert(RewardTooSmall.selector);
-        vault.createTask{value: value}(address(yolo), 1, 0, "Title", "c", 0, 0, "", value, _noSwap());
-    }
-}
-
-/// @dev The real oracle's highest-sample rule: one crashed sample in an honest window does not move the price.
-contract ReviewYoloFloorUnit is Test {
-    address constant USDC = address(0x1000);
-    address constant IMD = address(0x2000);
-    address constant YOLO = address(0x0500);
-    MockPoolManager pm;
-    ChainlinkUniV3PriceOracle oracle;
-
-    function setUp() public {
-        vm.warp(1_800_000_000);
-        pm = new MockPoolManager();
-        oracle = new ChainlinkUniV3PriceOracle(
-            USDC,
-            IMD,
-            IAggregatorV3(address(new MockFeed(2500e8))),
-            IAggregatorV3(address(new MockFeed(1e8))),
-            IUniswapV3PoolObserve(address(new MockV3Pool())),
-            1800,
-            2 hours,
-            48 hours,
-            YOLO,
-            address(pm),
-            address(0x784),
-            12_500,
-            60,
-            0.01e18,
-            15_000e18 * 1e18 / 1_000_000_000e18
-        );
-    }
-
-    function _sample(int24 tick) internal {
-        pm.setTick(oracle.yoloPoolId(), tick);
-        vm.prank(address(0x5EED), address(0x5EED));
-        assertFalse(oracle.sampleYoloPrice()); // the read; stored in a later block (swarm audit #1)
-        vm.roll(vm.getBlockNumber() + 1);
-        vm.prank(address(0x5EED), address(0x5EED));
-        assertTrue(oracle.sampleYoloPrice());
-        vm.warp(vm.getBlockTimestamp() + 15 minutes);
-    }
-
-    /// One sample at the bottom tick must not take a priced 2M YOLO to the floor (30 IMD instead of 300) for two
-    /// hours. The YOLO price is the highest sample of the window, so the crashed sample changes nothing;
-    /// `lowestYoloTick` still shows it.
-    function test_Fixed_S4_oneCrashedSampleNoLongerMovesThePrice() public {
-        int24 tenX = -88_053;
-        for (uint256 i; i < 5; ++i) {
-            _sample(tenX);
-        }
-        uint256 honest = oracle.imdValue(YOLO, 2_000_000e18);
-        _sample(-887_220);
-        assertTrue(oracle.hasPrice(YOLO));
-        uint256 crashed = oracle.imdValue(YOLO, 2_000_000e18);
-        console.log("2M YOLO in IMD, honest 10x / after the crashed sample", honest, crashed);
-        assertEq(crashed, honest, "fixed: the highest sample counts");
-        assertApproxEqRel(honest, 300e18, 0.01e18, "10x the floor of 15,000 IMD per 1B");
-        (, int24 lowest) = oracle.lowestYoloTick();
-        (, int24 highest) = oracle.highestYoloTick();
-        assertEq(lowest, -887_220);
-        assertEq(highest, tenX);
+        vault.createTask(address(yolo), 1_000e18 - 1, dl, "Title", rulesOf("c"), 0, 0, "", _noSwap());
+        vm.prank(alice);
+        vault.createTask(address(yolo), 1_000e18, dl, "Title", rulesOf("c"), 0, 0, "", _noSwap()); // exactly the minimum, no price set
     }
 }
