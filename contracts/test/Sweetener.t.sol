@@ -303,7 +303,7 @@ contract SweetenerTest is Base {
         _vote(s, 1, REJECT, 120, 20);
         _endVote(s);
         _appeal(doer, s);
-        _warp(12 hours);
+        _warp(1 hours); // asked inside swarmTimeout (6 h): a later ask finds the appeal void
         _askAppealSwarm(s); // lazy ask
         _answer(s, true);
         vault.poke(t);

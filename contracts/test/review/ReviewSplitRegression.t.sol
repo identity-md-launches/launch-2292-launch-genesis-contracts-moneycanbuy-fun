@@ -218,19 +218,19 @@ contract ReviewSplitRegression is SplitScenarios {
     // rule or a field layout changes on purpose; the inline assertEq calls in each _sN...() function are
     // re-verified by hand first, and the new hashes are then taken from the _golden() log output.
     bytes32 internal constant S1_A = 0x4830ea4fcc6dc5027c1f37bcad5852e0b11e2b542d5bf3a1b4e0bf9f8b5d8d55;
-    bytes32 internal constant S1_B = 0x9fa15edfc0cb8cf85b0c22eb7c9c3ed8df8167d418c229d81e9ca6aac9b73151;
+    bytes32 internal constant S1_B = 0xa4018a5ae1f016fc869c28d2e27ea22d88e1d937e0efb0592baa756f921319ad;
     bytes32 internal constant S1_C = 0x65dcffba9fa5f218c43b4c3f810b8d61e0676b615cd88c2200be717a94fa422b;
     bytes32 internal constant S2_A = 0x08d27cc2a8693d93d430a64d7a89b5d993f0bc3aaa0f468e9d26ec43c1adc65d;
-    bytes32 internal constant S2_B = 0x4405376f260e08bcc746fd3846e5f88865cdea78094a9958f536ec0804be9d4b;
+    bytes32 internal constant S2_B = 0x7d5a35e896f5cc60c3cebee7443c57120a4abf9130d2d794c36a86769c152705;
     bytes32 internal constant S2_C = 0x808551d4f18f1c9f9021bde675a4cd14dd60e843467f3bfd666fd1221b8bddd1;
     bytes32 internal constant S3_A = 0xbb589401078dd43b88cbc7c1c174981c2ee68b3027a30d9ffdcf05a917cc491d;
-    bytes32 internal constant S3_B = 0x4ce121922bb3b346c9ee67fb29d07ea62251343468690cf77f7562794589778f;
+    bytes32 internal constant S3_B = 0x880d35a1a6c101757740019ffe504083f1353824cf6c05eb99c4e48fe76bf58a;
     bytes32 internal constant S3_C = 0x4755fc921943fe650cc0871884c69218df089678208e1ea5cc2d2410865f21ce;
     bytes32 internal constant S4_A = 0x76984c0edfd7138e1eeafbca442dc75eac4cdca48dfce84a332a3dbe3eb570fd;
-    bytes32 internal constant S4_B = 0x03d1a17124e2592291958b4a07e9ebddd6f92850b0c514f803cb36cb4fd9720b;
+    bytes32 internal constant S4_B = 0xdb27e0d67237b840a3897b3e94d0bc38e88d80d4f00b209c05909985a9e9b9f4;
     bytes32 internal constant S4_C = 0xf9dbd032a0ab92846b8ead6e767bad8491ba22ce779070f3e67373d796740420;
     bytes32 internal constant S5_A = 0x38cc28fed888cc3bcd65c4d5b72aa4ec16f7b4731c45419596c21cda6e366d7a;
-    bytes32 internal constant S5_B = 0x8633904b3b341d2229a33b142f9dc27dfbfd6a1d5b60434f1827f1155176328c;
+    bytes32 internal constant S5_B = 0x12641fdf0b0d28314e7cdd711051407e007d2e0d2c3006ec555db150a1bb11c5;
     bytes32 internal constant S5_C = 0xa82fdb047f774ed464eb049c7e6b261d5bc214d5978856d853700b07460f2f09;
 
     // disputeWindow/voteWindow/appealWindow/swarmTimeout hold the production values 24h/24h/24h/6h. Only every B

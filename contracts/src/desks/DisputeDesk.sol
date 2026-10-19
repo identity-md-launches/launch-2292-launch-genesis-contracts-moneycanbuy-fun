@@ -197,7 +197,8 @@ contract DisputeDesk is Desk {
     ///         side opposite to the decision and pays a dispute bond plus the live swarm fee now. The question is
     ///         asked lazily, at the next call that carries it: `step`/`poke` cannot carry the resupplied text, so
     ///         the ask happens via the separate permissionless `askAppealSwarm`, not in this transaction.
-    ///         `maxImdIn` caps bond + fee: the Intake price may differ at call time. The doer or the
+    ///         `maxImdIn` caps bond + fee in IMD (with the bond's "rew" part when R is in IMD): the Intake price
+    ///         may differ at call time. The doer or the
     ///         disputer appealing for their own side posts no second bond: the fee comes out of their dispute bond
     ///         (`_fundCall`).
     /// @dev No `reason` parameter: an appeal is a button, not
@@ -230,6 +231,9 @@ contract DisputeDesk is Desk {
     ///         the stored hashes and revert `RulesMismatch` otherwise.
     ///         The fee/bond were already fixed in `appeal`, this only spends them.
     function askAppealSwarm(uint256 subId, RuleTexts calldata rt) external routed {
+        // play due timers first: an appeal not asked within swarmTimeout is void (CaseDesk.step), the late ask
+        // then reverts WrongPhase in CaseDesk.askAppeal
+        ICaseDesk(caseDesk).advanced(subId);
         Appeal storage a = _appeals[subId];
         uint256 funds = a.funds + a.fromBond; // read before the ask: a void question drops the caller below
         ICaseDesk(caseDesk).askAppeal(subId, funds, rt);
@@ -300,7 +304,8 @@ contract DisputeDesk is Desk {
             bond = _disputeBond(s.base, p);
         }
         uint256 pay = fee - fromBond;
-        if (bond.imd + pay > maxImdIn) revert CostAboveMax();
+        // the bond's "rew" part is IMD too on an IMD task: _collectBond pulls it in the same collectImd call
+        if (bond.imd + pay + (s.currency == address(imd) ? bond.rew : 0) > maxImdIn) revert CostAboveMax();
         a.bond = bond;
         a.fromBond = fromBond;
         a.funds = pay;
@@ -702,7 +707,8 @@ contract DisputeDesk is Desk {
 
     /// @dev Accepted: R - 10% to the doer, in the reward currency. Of the 10% fee: nftFeeBps (5%)
     ///      to the correct votes after a dispute the NFT decided right; the other 5% is the stakers' part. A doer
-    ///      whose submission fixed a stake bonus (`Facts.stakeBps`, 4% x min(1, power / the author's reward in $YOLO), CaseDesk) and
+    ///      whose submission had a stake (`Facts.staked`; bonus `Facts.stakeBps`, 4% x min(1, power / the author's reward in $YOLO),
+    ///      CaseDesk, may floor to 0 bps) and
     ///      whose lock still runs (YoloLockHub.stakePower) gets that share of R from that part, even if they put money
     ///      into this task themselves, the rest of it is
     ///      split half to the burn, half to the treasury, and the NFT 5% nobody earned is
@@ -719,7 +725,7 @@ contract DisputeDesk is Desk {
         uint256 toTreasury = fee - toVoters;
         uint256 bonus;
         uint256 bps = f.stakeBps;
-        if (bps != 0 && _lockRuns(f)) {
+        if (f.staked && _lockRuns(f)) {
             st.stakeBps = bps;
             uint256 stakers = fee - nftPart;
             bonus = r * bps / BPS;

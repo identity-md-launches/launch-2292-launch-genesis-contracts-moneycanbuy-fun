@@ -203,7 +203,7 @@ contract ScenariosTest is Base {
         } else {
             address appellant = _sub(s).nftDecision == Verdict.Accept ? who : doer;
             _appeal(appellant, s);
-            _warp(12 hours);
+            _warp(1 hours); // asked inside swarmTimeout (6 h): a later ask finds the appeal void
             _askAppealSwarm(s); // asks; may void the appeal if the price moved above the prepaid fee (lazy ask)
             if (_phase(s) != Phase.Asked) return false;
         }

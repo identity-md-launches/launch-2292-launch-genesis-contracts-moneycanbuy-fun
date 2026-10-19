@@ -189,14 +189,14 @@ struct Submission {
     Verdict nftDecision;
     uint32 asks; // swarm questions asked or void for this submission (question nonce; at most MAX_SWARM_CALLS)
     uint16 stakeBps; // the doer stake bonus fixed at submission, 0..400 bps of R
+    bool staked; // the doer had a stake at submission (power and a $YOLO price), even if stakeBps floors to 0
     uint64 submittedAt; // the lock behind stakeBps must still run at the payout (YoloLockHub.stakePower)
     uint64 activatedAt;
     uint64 windowEnd; // end of the dispute window
     uint64 voteEnd;
     uint64 decidedAt; // time of the NFT decision
     uint64 callFrom; // start of the current window to call the swarm (NoDecision / Decided)
-    uint64 appealedAt; // when markAppealed ran; stepDeadline of Phase.Appealed
-        // (the question is due at once)
+    uint64 appealedAt; // when markAppealed ran; stepDeadline of Phase.Appealed = appealedAt + swarmTimeout (void)
     // R and the author's part of it share one slot (both < 2^128: every share of a pot is a uint128)
     uint128 reward; // R, fixed at submission (task currency): what the doer is paid
     uint128 base; // the author's own share of R at submission: the base of every bond's "rew" part

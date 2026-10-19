@@ -392,7 +392,7 @@ contract MoneyRulesTest is Base {
         uint256 s = _disputeDecided(t, REJECT);
         for (uint256 i; i < 3; ++i) {
             _appeal(doer, s);
-            _warp(12 hours); // time passes before anyone asks (the ask is lazy: anyone asks, in a separate transaction)
+            _warp(1 hours); // asked inside swarmTimeout (6 h): a later ask finds the appeal void
             _askAppealSwarm(s); // lazy ask
             _silent(s);
             vault.poke(t);
@@ -411,7 +411,7 @@ contract MoneyRulesTest is Base {
         for (uint256 i; i < 3; ++i) {
             assertEq(uint8(_phase(s)), uint8(Phase.Decided));
             _appeal(doer, s);
-            _warp(12 hours);
+            _warp(1 hours); // asked inside swarmTimeout (6 h): a later ask finds the appeal void
             intake.setBroken(true);
             _askAppealSwarm(s); // void: bond and fee back to the doer (lazy ask)
             intake.setBroken(false);
@@ -495,7 +495,7 @@ contract MoneyRulesTest is Base {
         uint256 t1 = _create(author, address(usdc), 100e6);
         uint256 s1 = _disputeDecided(t1, REJECT);
         _appeal(doer, s1);
-        _warp(12 hours);
+        _warp(1 hours); // asked inside swarmTimeout (6 h): a later ask finds the appeal void
         _askAppealSwarm(s1); // lazy ask
         _answer(s1, true);
         vault.poke(t1);
@@ -512,7 +512,7 @@ contract MoneyRulesTest is Base {
         _vote(s2, 1, REJECT, 120, 20);
         _endVote(s2);
         _appeal(doer2, s2);
-        _warp(12 hours);
+        _warp(1 hours); // asked inside swarmTimeout (6 h): a later ask finds the appeal void
         _askAppealSwarm(s2); // lazy ask
         _answer(s2, true);
         vault.poke(t2);

@@ -53,7 +53,7 @@ contract ReviewGasGrief is Base {
         _vote(s, 0, REJECT, 0, 100); // NFT: reject
         _endVote(s); // decided at the end of voting
         _appeal(doer, s);
-        _warp(12 hours); // time passes; the question is asked by the first askAppealSwarm call
+        _warp(1 hours); // inside swarmTimeout (6 h); the question is asked by the first askAppealSwarm call
         RuleTexts memory rt = _genericRuleTexts();
         uint256 found;
         for (uint256 g = 100_000; g < 2_000_000; g += 2_000) {

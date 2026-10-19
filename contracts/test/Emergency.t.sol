@@ -26,11 +26,13 @@ contract EmergencyTest is Base {
     function test_AppealAskedLazily_ResolvesByTimer() public {
         _vote(s, 1, 1, 120, 20); // = instantDelta: decides at once
         _appeal(erin, s);
-        _warp(12 hours + 31 days); // nobody asked for a long time: still lazy, asked whenever anyone does
-        _askAppealSwarm(s); // lazy ask
-        assertEq(uint8(_phase(s)), uint8(Phase.Asked));
-        _answer(s, true);
-        vault.poke(t);
+        _warp(12 hours + 31 days); // nobody asked within swarmTimeout (6 h): the appeal is void
+        vm.expectRevert(WrongPhase.selector);
+        _askAppealSwarm(s); // a late ask plays the timers first and finds the appeal void
+        vault.poke(t); // void: bond and fee back to erin, a new appeal window starts
+        assertEq(uint8(_phase(s)), uint8(Phase.Decided));
+        _warp(24 hours);
+        vault.poke(t); // nobody appealed again: the NFT decision (accept) stands
         assertEq(uint8(_sub(s).outcome), uint8(Outcome.Accepted));
         _claimEverythingAndCheck();
     }

@@ -829,7 +829,7 @@ contract DisputesTest is Base {
     function test_Appeal_Silent_DecisionStands_NewWindow() public {
         _decideAccept();
         _appeal(dave, s);
-        _warp(12 hours);
+        _warp(1 hours); // asked inside swarmTimeout (6 h): a later ask finds the appeal void
         _askAppealSwarm(s); // lazy ask
         _warp(1 hours);
         _silent(s);
@@ -860,7 +860,7 @@ contract DisputesTest is Base {
     function test_Appeal_Silent_ReappealFlips() public {
         _decideAccept();
         _appeal(dave, s);
-        _warp(12 hours);
+        _warp(1 hours); // asked inside swarmTimeout (6 h): a later ask finds the appeal void
         _askAppealSwarm(s); // lazy ask
         _silent(s);
         _warp(1 hours);
@@ -897,7 +897,7 @@ contract DisputesTest is Base {
     function test_Appeal_LateAnswerAfterSilenceIgnored() public {
         _decideAccept();
         _appeal(dave, s);
-        _warp(12 hours);
+        _warp(1 hours); // asked inside swarmTimeout (6 h): a later ask finds the appeal void
         _askAppealSwarm(s); // lazy ask
         bytes32 first = _sub(s).request;
         _warp(6 hours + SWARM_DELIVERY_GRACE); // the timeout and the delivery grace (swarm audit 117cf05a #7)
@@ -917,7 +917,7 @@ contract DisputesTest is Base {
     function test_Appeal_PriceRaised_AppealVoided() public {
         _decideAccept();
         _appeal(dave, s);
-        _warp(12 hours);
+        _warp(1 hours); // asked inside swarmTimeout (6 h): a later ask finds the appeal void
         intake.setPrice(2e18);
         _askAppealSwarm(s); // the live price is above the fee his bond covers: nothing is asked (lazy ask)
         assertEq(uint8(_phase(s)), uint8(Phase.Decided));
@@ -936,7 +936,7 @@ contract DisputesTest is Base {
     function test_Appeal_IntakeReverts_AppealVoided() public {
         _decideAccept();
         _appeal(dave, s);
-        _warp(12 hours);
+        _warp(1 hours); // asked inside swarmTimeout (6 h): a later ask finds the appeal void
         intake.setBroken(true); // request reverts: the machine must not get stuck
         _askAppealSwarm(s); // lazy ask
         assertEq(uint8(_phase(s)), uint8(Phase.Decided));

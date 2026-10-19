@@ -98,16 +98,16 @@ contract ReviewLaunchStatic is Test {
     string constant DOC3_PREDICT = '["<TASK_VAULT>", "1000000000000000000"]'; // no sweetener arg (no exclusion)
     // the per-contract room the doc states (EIP-170 margin, bytes); every margin is re-measured with
     // `forge build --sizes` whenever the code changes (via-ir shifts untouched contracts too: whole-program opt).
-    uint256 constant DOC_MARGIN_DISPUTE = 3_311; // vote by NFT ids; quote views in CaseDesk
+    uint256 constant DOC_MARGIN_DISPUTE = 3_177; // vote by NFT ids; quote views in CaseDesk
     uint256 constant DOC_MARGIN_VAULT = 3_997; // top-ups join the pot at once, `potOf`
-    uint256 constant DOC_MARGIN_CASE = 4_805; // the whole pot on acceptance (`potOf`), no stake threshold, power vs the author's reward only
+    uint256 constant DOC_MARGIN_CASE = 4_612; // the whole pot on acceptance (`potOf`), no stake threshold, power vs the author's reward only
     uint256 constant DOC_MARGIN_HUB = 21_426; // YoloLockHub (a lock with checkpoints and epochs), launch 2
-    uint256 constant DOC_MARGIN_SWEETENER = 17_847;
-    uint256 constant DOC_MARGIN_TROPHY = 12_830;
+    uint256 constant DOC_MARGIN_SWEETENER = 17_828;
+    uint256 constant DOC_MARGIN_TROPHY = 12_799;
     uint256 constant DOC_MARGIN_DIRECTORY = 20_030;
     uint256 constant DOC_MARGIN_HIDDENLIST = 20_787;
     uint256 constant DOC_MARGIN_CATALOG = 20_348;
-    uint256 constant DOC_MARGIN_PREDICT = 18_611;
+    uint256 constant DOC_MARGIN_PREDICT = 18_590;
     uint256 constant DOC_MARGIN_SUPPORT_MIN = 11_023; // ParamsRegistry
 
     /// @dev placeholder / factory reference of the doc -> the address the plan gives it

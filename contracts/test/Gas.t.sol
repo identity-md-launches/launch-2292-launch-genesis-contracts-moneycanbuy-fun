@@ -78,7 +78,7 @@ contract GasTest is Base {
         _appeal(doer, s);
         _measure("appeal");
 
-        _warp(12 hours);
+        _warp(1 hours); // asked inside swarmTimeout (6 h): a later ask finds the appeal void
         _start();
         _askAppealSwarm(s); // lazy ask
         _measure("askAppealSwarm (asks the filed appeal; builds body, pays Intake)");

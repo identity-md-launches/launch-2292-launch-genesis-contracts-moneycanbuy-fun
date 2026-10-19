@@ -85,7 +85,7 @@ contract ReviewRoles is Base {
                 _callSwarm(caller, s, c.sidesDoer);
             } else if (_phase(s) == Phase.Decided) {
                 _appeal(caller, s);
-                _warp(12 hours);
+                _warp(1 hours); // asked inside swarmTimeout (6 h): a later ask finds the appeal void
                 _askAppealSwarm(s); // lazy ask
             }
             if (_phase(s) == Phase.Asked) {

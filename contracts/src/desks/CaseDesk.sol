@@ -112,7 +112,7 @@ contract CaseDesk is Desk {
         s.addon = t.addon;
         Bond memory b = _doerBond(t.base, p);
         s.bond = b;
-        s.stakeBps = _stakeBps(t, sender, p);
+        (s.stakeBps, s.staked) = _stakeBps(t, sender, p);
         _terms[subId] = Terms(t.version, t.currency);
 
         if (b.rew > maxBondRew) revert CostAboveMax();
@@ -323,9 +323,9 @@ contract CaseDesk is Desk {
         if (ph == Phase.Review) return s.windowEnd;
         if (ph == Phase.Voting) return s.voteEnd;
         if (ph == Phase.NoDecision || ph == Phase.Decided) return uint256(s.callFrom) + p.appealWindow;
-        // the appeal's ask is lazy, due from the moment it was filed (markAppealed) - no separate reply
-        // window.
-        if (ph == Phase.Appealed) return s.appealedAt;
+        // the appeal's ask is lazy, due from the moment it was filed (markAppealed); not asked within swarmTimeout
+        // it is void (step)
+        if (ph == Phase.Appealed) return uint256(s.appealedAt) + p.swarmTimeout;
         if (ph == Phase.Asked) return uint256(_bank().requests(s.request).askedAt) + p.swarmTimeout + SWARM_DELIVERY_GRACE;
         return type(uint128).max; // not an active step
     }
@@ -468,7 +468,8 @@ contract CaseDesk is Desk {
             reward: s.reward,
             bond: s.bond,
             since: s.submittedAt,
-            stakeBps: s.stakeBps
+            stakeBps: s.stakeBps,
+            staked: s.staked
         });
         IDisputeDesk(disputeDesk).settle(subId, o, f);
         emit SubmissionFinal(subId, taskId, o);
@@ -499,19 +500,24 @@ contract CaseDesk is Desk {
     ///      blocks a submission: a hub or a DevPrices that fails counts as no stake.
     ///      The power is measured against the author's reward only (`t.base`, the base of the doer bond), without
     ///      others' top-ups and without the $YOLO add-on; the share is still paid on both.
-    function _stakeBps(SubmitTerms memory t, address doer, ParamsCore memory p) private view returns (uint16) {
+    ///      `staked`: any power with a $YOLO price, also when the share floors to 0 bps (the staked split still applies).
+    function _stakeBps(SubmitTerms memory t, address doer, ParamsCore memory p)
+        private
+        view
+        returns (uint16, bool staked)
+    {
         // a hub without code, failing or answering anything but one word counts as no stake
         (bool ok, bytes memory ret) =
             address(doerStake).staticcall(abi.encodeCall(IDoerStake.powerAt, (doer, block.timestamp)));
-        if (!ok || ret.length != 32) return 0;
+        if (!ok || ret.length != 32) return (0, false);
         uint256 power = abi.decode(ret, (uint256));
-        if (power == 0) return 0;
+        if (power == 0) return (0, false);
         uint256 r;
         try DevPrices(p.devPrices).yoloValue(t.currency, t.base) returns (uint256 y) {
             r = y;
         } catch {}
-        if (r == 0) return 0; // no $YOLO price
-        return uint16(power >= r ? MAX_STAKE_BONUS_BPS : MAX_STAKE_BONUS_BPS * power / r);
+        if (r == 0) return (0, false); // no $YOLO price
+        return (uint16(power >= r ? MAX_STAKE_BONUS_BPS : MAX_STAKE_BONUS_BPS * power / r), true);
     }
 
     function _core(uint256 subId) private view returns (SubCore memory c) {

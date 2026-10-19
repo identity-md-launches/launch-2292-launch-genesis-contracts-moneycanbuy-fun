@@ -58,7 +58,8 @@ project, carried out by its wallets in public transactions; no contract enforces
    / 52, fixed at the lock) at their submission earns them 4% × min(1, power / the author's reward in YOLO) of the
    reward from the fee: the whole 4% once the power is worth the author's own reward (no YOLO add-on, no others'
    top-ups), less in proportion below it, from any power. The rest of the stakers' 5% goes half to the burn, half
-   to the treasury. Computed by the DisputeDesk at payout and booked by the vault from the fee it holds.
+   to the treasury. The share is fixed by the CaseDesk at submission; at payout the DisputeDesk only checks that
+   the same lock still runs, and the vault books it from the fee it holds.
 8. **Burner** (`BuybackBurner`, launch 1). The burn shares paid in ETH, USDC or IMD go from the vault's payout
    straight to the buyback wallet; the burner holds them only if that send fails, and anyone's `forward` sends them
    on. $YOLO there goes to `0x…dEaD` by anyone's `burnYolo`. The contract swaps nothing.
@@ -76,8 +77,8 @@ project, carried out by its wallets in public transactions; no contract enforces
 
 ## Distribution
 
-Every vesting clock starts when `YoloSplitter.split` pays it, right after launch 1 (months of 30.4 days); no cliff
-anywhere.
+Every vesting clock starts when `YoloSplitter.split` pays it, right after launch 1 (12 months = 365 days, 24 months =
+730 days); no cliff anywhere.
 
 | Share | Amount | Where | Code |
 |---|---|---|---|
@@ -210,9 +211,9 @@ submission and was minted by its doer, the trophies' `totalBurned` equals the su
 
 ## YOLO Predict, doer stake, burner
 
-The core protocol uses these modules: the DisputeDesk asks the hub at payout; the vault sends $YOLO burn shares to
-the burner and ETH, USDC and IMD burn shares straight to the buyback wallet (to the burner only if that send fails);
-YOLO Predict reads only the vault.
+The core protocol uses these modules: the CaseDesk reads the hub at submission and the DisputeDesk at payout; the
+vault sends $YOLO burn shares to the burner and ETH, USDC and IMD burn shares straight to the buyback wallet (to the
+burner only if that send fails); YOLO Predict reads only the vault.
 
 ### YoloPredict (YOLO Predict)
 

@@ -47,6 +47,7 @@ struct Facts {
     Bond bond;
     uint64 since; // the submission's time: the lock behind the stake bonus must still run at the payout
     uint16 stakeBps; // the doer stake bonus fixed at submission (0..400 bps of R)
+    bool staked; // the doer had a stake at submission: the staked split applies even if stakeBps floors to 0
 }
 
 /// @notice NFT vote totals of a submission.

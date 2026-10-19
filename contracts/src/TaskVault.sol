@@ -353,14 +353,14 @@ contract TaskVault {
         _advance(taskId);
     }
 
-    /// @notice Cancel a task: only the dev wallet, the owner of the
-    ///         DevPrices of the task's parameter version (the wallet that sets the prices), and only while the task
-    ///         is still open after its timers are played, i.e. before its final payout. The task becomes Unwound and
-    ///         everyone takes back exactly what they put in, each with their own call: the reward and top-ups with
-    ///         `withdrawContribution`, the doer's bond and an appellant's bond and unspent prepayment as credits,
-    ///         disputers with `claimDisputer`, queued doers with `claimVoidSubmission`, $YOLO add-ons with
-    ///         `YoloSweetener.withdraw`, YOLO Predict positions in full with `YoloPredict.claim`. The dev wallet gets
-    ///         nothing in any outcome; swarm fees already paid to the Intake are gone and come back to nobody.
+    /// @notice Cancel a task: only the dev wallet, the owner of the DevPrices of the task's parameter version (the
+    ///         wallet that sets the prices), and only while the task is still open after its timers are played, i.e.
+    ///         before its final payout. The task becomes Unwound and everyone takes back what they put in except swarm
+    ///         fees already paid, each with their own call: the reward and top-ups with `withdrawContribution`, the
+    ///         doer's bond and an appellant's bond and unspent prepayment as credits, disputers with `claimDisputer`,
+    ///         queued doers with `claimVoidSubmission`, $YOLO add-ons with `YoloSweetener.withdraw`, YOLO Predict
+    ///         positions in full with `YoloPredict.claim`. The dev wallet gets nothing in any outcome; swarm fees
+    ///         already paid to the Intake are gone and come back to nobody.
     function cancelTask(uint256 taskId) external nonReentrant {
         Task storage t = _tasks[taskId];
         if (t.author == address(0)) revert TaskNotOpen();

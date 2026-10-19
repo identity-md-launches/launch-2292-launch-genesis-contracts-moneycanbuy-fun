@@ -34,7 +34,7 @@ except swarm fees already paid; it takes nothing for itself. Parameters are fixe
 | IMD swarm (Intake) | answers yes/no through `onOracleResult` only (no public fallback) | `TaskVault.sol` |
 | Treasury | receives its part of the fee (non-$YOLO); pays for nothing; `sweepTreasury` (anyone) credits it, then it withdraws | `TaskVault.sol` |
 | Staked doer (`YoloLockHub`) | `lock(add, weeks)` $YOLO for 1-52 weeks, `withdraw` after the end; the lock's power (fixed at the lock) at their submission, against the reward in $YOLO, sets the doer bonus | `YoloLockHub.sol`, `desks/CaseDesk.sol`, `desks/DisputeDesk.sol` |
-| Dev wallet (`0x8Ad18E99F4C8d8406f9Ba8899CF308000518A981`, the DevPrices owner) | `cancelTask(taskId)` of an Open task: Unwound, all money goes back to those who put it in, each claims their own; the dev wallet takes nothing for itself. Also sets the prices (`DevPrices`) and the buyback wallet (`BuybackBurner.setBuybackWallet`) | `TaskVault.sol` `cancelTask`, `DevPrices.sol`, `BuybackBurner.sol` |
+| Dev wallet (`0x8Ad18E99F4C8d8406f9Ba8899CF308000518A981`, the DevPrices owner) | `cancelTask(taskId)` of an Open task: Unwound in any open phase, all money goes back to those who put it in except swarm fees already paid, each claims their own; the dev wallet takes nothing for itself. Also sets the prices (`DevPrices`) and the buyback wallet (`BuybackBurner.setBuybackWallet`) | `TaskVault.sol` `cancelTask`, `DevPrices.sol`, `BuybackBurner.sol` |
 | Anyone, for the `BuybackBurner` | `burnYolo` ($YOLO to `0x…dEaD`), `forward` (ETH, USDC, IMD to the buyback wallet), `pull`; nobody is paid for calling | `BuybackBurner.sol` |
 | NFT holder / delegate (moderation) | `vote` to hide or keep a task or proof on the site (separate from dispute voting above): 24h round, passes at >= 10 hide NFTs, more hide than keep, >= 3 distinct hide owners; the 7-day cooldown after a contested round only bites once the hide side itself reached the 10-NFT quorum; the project wallet sets the state at once with `setState` | `HiddenList.sol` |
 | Anyone | `poke` (play timers), `sweepTreasury`, `withdraw` own credits; the burner's Burn and Send buttons on the site | `TaskVault.sol` |
@@ -58,8 +58,8 @@ except swarm fees already paid; it takes nothing for itself. Parameters are fixe
 - **Deadline.** Required, never changes. Closes `submit` and `topUp`, and YOLO Predict positions. An active
   submission and the whole queue are still judged to the end. The task becomes **Expired** only when the deadline
   passed and no submission is active; then everyone withdraws their share.
-- **Statuses:** Open → Completed (accepted) / Expired / Unwound (the task was cancelled with `cancelTask`: everyone takes back exactly what they put in;
-  swarm fees already paid are not returned). A rejection keeps the task Open. On
+- **Statuses:** Open → Completed (accepted) / Expired / Unwound (the task was cancelled with `cancelTask`: allowed in any open phase, everyone takes back what they put in
+  except swarm fees already paid). A rejection keeps the task Open. On
   a Completed task `activeSub` keeps the accepted submission's id (read by YoloPredict and YoloSweetener).
 
 ## Submission lifecycle
@@ -188,7 +188,7 @@ stays as a credit.
 | ...no dispute, NFT undecided or wrong | nobody "decided right" to earn that 5%: to the treasury without a stake, burned with a staked doer | `desks/DisputeDesk.sol` |
 | ...the rest, doer without a stake | to the treasury: 10% without an NFT share, 5% with one | `desks/DisputeDesk.sol` |
 | ...the rest, staked doer | of the stakers' 5%: the share fixed at the submission, b = 4% × min(1, power / the author's reward in $YOLO) of R, to the doer (at most the 5%); what is left (5% − b) half to the burn, half to the treasury (an odd unit to the treasury) | `desks/DisputeDesk.sol`; `VaultTypes.sol` |
-| Doer stake condition | at submission (`_stakeBps`): the share depends on the doer's lock power at that moment (`YoloLockHub.powerAt`, also for a queued submission; power = $YOLO locked × lock weeks / 52) against the author's own reward in $YOLO (the bond base: no $YOLO add-on, no others' top-ups), a non-$YOLO reward converted at the $YOLO price parameter at submission; any power above 0 counts, no threshold; no $YOLO price or a hub that fails = no bonus; a doer who put money into the task gets the bonus as usual; the share is stored as `Submission.stakeBps`. At payout: `YoloLockHub.stakePower(doer, submittedAt)` must not be 0 (the same lock, never withdrawn, still running) | `YoloLockHub.sol`; `VaultTypes.sol` |
+| Doer stake condition | at submission (`_stakeBps`): the share depends on the doer's lock power at that moment (`YoloLockHub.powerAt`, also for a queued submission; power = $YOLO locked × lock weeks / 52) against the author's own reward in $YOLO (the bond base: no $YOLO add-on, no others' top-ups), a non-$YOLO reward converted at the $YOLO price parameter at submission; any power above 0 counts, no threshold, and a share that rounds down to 0 bps still settles as a staked doer (`Submission.staked`); no $YOLO price or a hub that fails = no stake; a doer who put money into the task gets the bonus as usual; the share is stored as `Submission.stakeBps`. At payout: `YoloLockHub.stakePower(doer, submittedAt)` must not be 0 (the same lock, never withdrawn, still running) | `YoloLockHub.sol`; `VaultTypes.sol` |
 | Where a burn goes | $YOLO to the `BuybackBurner`, waits for `burnYolo`; ETH, USDC, IMD straight to the buyback wallet in the same transaction; a revert there (no `receive`) falls back to the `BuybackBurner`, for its own `forward` | `TaskVault.sol` |
 | $YOLO the treasury would get | sent by the vault to the `BuybackBurner` for `burnYolo`, never in `treasuryPot`: on a $YOLO task the whole fee that is not the doer's or the NFT's burns | `TaskVault.sol` |
 | Loser's bonds (penalty) | split separately in IMD and in the reward currency, no swarm fee refund; a third party who asked the swarm and whose side wins first gets 0.5 IMD of the loser's IMD bond; the losing side's own swarm fees already went to the swarm out of its bond | `desks/DisputeDesk.sol` |
@@ -333,6 +333,21 @@ implies.
   it cannot touch a task, bond or reward. Content stays on chain, on IPFS and on X / YouTube / TikTok regardless; a
   fork of the site's IPFS build can drop `hiddenList` from its config and show everything it hides.
 
+## Known limitations
+
+- A holder of 20+ NFTs can dispute an honest submission from a second wallet and vote alone to take the NFT 5% of the
+  reward that otherwise goes to the treasury; this is economically irrational (20 NFTs at about $5k each for about $3
+  on a $100 task), so it is not prevented.
+- A submission nobody disputes within 24 h is accepted without a vote; predictors on WON'T DO protect themselves by
+  disputing.
+- An appeal not asked within 6 h is voided with a full refund and reopens the 24 h appeal window (at most 3 asks per
+  submission, a voided appeal counts as one); queued submissions are judged one after another, so a task with junk
+  submissions can hold the reward for days; anyone can ask a pending appeal to end it.
+- One dispute per submission: later disputes revert, and the swarm question carries the first disputer's reason;
+  anyone can still pay to call the swarm, which judges the submission against the task.
+- `cancelTask` by the dev wallet is allowed in any open phase; swarm fees already spent are not refunded.
+- `YoloLockHub` counts a started week as a whole week of lock power (up to 1/52 of an added amount).
+
 ## Deployment layout (four launches)
 
 | Launch | Contracts, in order | Holds money | Code |
@@ -362,7 +377,7 @@ Gas of each whole factory transaction, fork rehearsal through the live IMD Proje
 | 2 | 14.88M | 1.90M |
 | 3 | 9.23M | 7.55M |
 
-A fix in launch 2 hits the EIP-170 size limit of 24,576 bytes before the gas cap (DisputeDesk has 3,311 bytes left,
+A fix in launch 2 hits the EIP-170 size limit of 24,576 bytes before the gas cap (DisputeDesk has 3,177 bytes left,
 `ReviewLaunch.test_L1_perContractCodeMargin_matchesDoc`, `docs/LAUNCH-TASK.md`). Launch 1 holds 8 of the factory's 8 contracts: no room. Paths: the
 IMD swarm launch (`docs/LAUNCH-TASK.md`: the four launch texts) or `script/DeployMainnet.s.sol` with a local factory.
 

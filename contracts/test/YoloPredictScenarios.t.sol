@@ -246,7 +246,7 @@ contract YoloPredictScenariosTest is Base {
         vm.expectRevert(YoloPredict.WindowClosed.selector);
         yoloPredict.predict(t, true, 1e18);
 
-        _warp(12 hours + 1);
+        _warp(1 hours); // asked inside swarmTimeout (6 h): a later ask finds the appeal void
         _askAppealSwarm(s); // lazy ask
         assertEq(uint8(_phase(s)), uint8(Phase.Asked));
         _answer(s, true); // swarm sides with the doer: accepted

@@ -22,7 +22,7 @@ contract ReviewAttestation is Base {
     function test_OnePersonPanelIsSilenceOnAppeal() public {
         (uint256 taskId, uint256 subId) = _disputedAndDecided();
         _appeal(dave, subId);
-        _warp(12 hours + 1);
+        _warp(1 hours); // asked inside swarmTimeout (6 h): a later ask finds the appeal void
         _askAppealSwarm(subId); // lazy ask
         assertEq(uint8(_sub(subId).phase), uint8(Phase.Asked));
         (bytes memory body,) = vault.previewSwarmBody(subId, 3, _genericRuleTexts());
