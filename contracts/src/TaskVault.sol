@@ -46,7 +46,7 @@ interface IBurnerWallet {
 ///
 ///         Money rules
 ///         - Every amount held belongs to exactly one bucket: a task pot, a submission's bonds,
-///           check or appeal prepayments, a dispute ETH pot, a settlement bucket waiting for lazy claims, a treasury
+///           check or appeal prepayments, a settlement bucket waiting for lazy claims, a treasury
 ///           pot, or a user credit. `liabilities[token]` is their sum and changes only when money enters or leaves.
 ///           Invariant: token balance >= liabilities[token]. Nothing is paid from the "general balance". All payouts
 ///           are pull (claims, `withdraw`). Only this contract moves money; the desks tell it what to book.
@@ -228,6 +228,7 @@ contract TaskVault {
                 || sig == ITaskVault.votesOf.selector || sig == ITaskVault.voterClaimed.selector
                 || sig == ITaskVault.hasVoted.selector || sig == ITaskVault.votePower.selector
                 || sig == ITaskVault.tokenVoted.selector || sig == ITaskVault.sideOf.selector
+                || sig == ITaskVault.sideSpent.selector
         ) return (disputeDesk, ROUTE_VIEW);
         if (sig == ITaskVault.quoteDisputeBond.selector || sig == ITaskVault.quoteSwarmFee.selector) {
             return (caseDesk, ROUTE_VIEW);

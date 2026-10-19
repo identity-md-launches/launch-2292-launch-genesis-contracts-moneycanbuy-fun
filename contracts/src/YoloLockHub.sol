@@ -61,6 +61,7 @@ contract YoloLockHub {
     ///         now (1..52, never earlier than the current end). A lock that is not running needs a term.
     function lock(uint256 add, uint256 weeks_) external {
         Lock memory l = locks[msg.sender];
+        if (l.end != 0 && l.end <= block.timestamp) ++l.epoch; // an ended lock set again is a new lock: no stake bonus
         uint256 end = l.end;
         // power of the running lock (0 once it ended: a lock set again starts afresh)
         uint256 old = end > block.timestamp ? _last(msg.sender).power : 0;

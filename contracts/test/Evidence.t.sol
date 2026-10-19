@@ -218,7 +218,7 @@ contract EvidenceTest is Base {
 
     /// @dev The longest question the bounds allow: prefix at its bound, proof of maxTextBytes (the three rule texts
     ///      are definitions, each of maxTextBytes), the
-    ///      longest proof type name and ids of their full types (the task id twice: DOER CODE and CASE). Exactly 2000
+    ///      longest proof type name and ids of their full types (the task id once, in CASE). Exactly 2000
     ///      (the Intake limit); the screenshot and the note are in definitions and add nothing to it.
     function test_WorstQuestionFitsIntakeLimit() public {
         Params memory p = defaultParams();

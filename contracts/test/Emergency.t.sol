@@ -29,10 +29,10 @@ contract EmergencyTest is Base {
         _warp(12 hours + 31 days); // nobody asked within swarmTimeout (6 h): the appeal is void
         vm.expectRevert(WrongPhase.selector);
         _askAppealSwarm(s); // a late ask plays the timers first and finds the appeal void
-        vault.poke(t); // void: bond and fee back to erin, a new appeal window starts
-        assertEq(uint8(_phase(s)), uint8(Phase.Decided));
-        _warp(24 hours);
-        vault.poke(t); // nobody appealed again: the NFT decision (accept) stands
+        // void at appealedAt + 6 h: bond and fee back to erin, the new appeal window counts from the void (reaudit
+        // logic #1), so it ended long before this poke: the NFT decision (accept) stands at once
+        vault.poke(t);
+        assertEq(uint8(_phase(s)), uint8(Phase.Final));
         assertEq(uint8(_sub(s).outcome), uint8(Outcome.Accepted));
         _claimEverythingAndCheck();
     }

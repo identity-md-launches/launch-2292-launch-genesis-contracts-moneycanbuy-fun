@@ -131,7 +131,8 @@ struct ImdPay {
 ///         its own definition (Intake: definition values <= 512), so a task may carry up to 3 x maxTextBytes of rules.
 ///         `task` (definition "task"): TASK, what to do, every step and every text needed (SPEECH and the like).
 ///         `proof` (definition "task_proof"): WINDOW, WHO, PROOF, SOURCE: when, who hands in, what the proof shows,
-///         where it lives, where the DOER CODE is. `noIf` (definition "task_no"): "NO if: ...", when the answer is no.
+///         where it lives, where the moneycanbuy.fun label is if the task requires it. `noIf` (definition
+///         "task_no"): "NO if: ...", when the answer is no.
 ///         Stored at creation, never change.
 struct TaskRules {
     string task;
@@ -178,7 +179,7 @@ struct Contribution {
     uint128 active;
     uint128 pending; // reserved, always 0
     uint64 pendingEpoch; // reserved, always 0
-    bool ever; // ever contributed to this task: as a winner they get only their own bond back
+    bool ever; // ever contributed to this task (read by isContributor only; in a dispute they are paid like anyone)
 }
 
 struct Submission {
@@ -242,7 +243,8 @@ struct Appeal {
     bool sidesDoer; // true: stands for acceptance (appeals a "reject" decision)
     Bond bond;
     uint256 funds; // prepaid swarm fee not spent yet
-    uint256 spent; // paid to the Intake for his question (reimbursed from the loser if he wins)
+    uint256 spent; // paid to the Intake for this question (a record only: a winning stranger gets up to 0.5 IMD back,
+    // and only from what is left of the loser's IMD bond, DisputeDesk._settleDecided)
     // no reason text: an appeal/call of the swarm is a button,
     // not a text field. The panel still sees the original dispute reason (DisputerInfo), not a second one.
     // a side of the dispute (the doer, or the disputer against the doer) calling the swarm for itself: no second
@@ -361,7 +363,8 @@ event VoidSubmissionClaimed(uint256 indexed subId, address indexed doer, uint256
 event Credited(address indexed token, address indexed account, uint256 amount);
 event Paid(address indexed token, address indexed account, uint256 amount);
 event TreasurySwept(address indexed token, address indexed treasury, uint256 amount);
-/// @dev `amount` of `token` left for burning: $YOLO straight to 0x…dEaD, any other token to the BuybackBurner.
+/// @dev `amount` of `token` left for burning: $YOLO to the BuybackBurner (its burnYolo sends it to 0x…dEaD), any
+///      other token (ETH, USDC, IMD) straight to the buyback wallet, to the BuybackBurner only if that send fails.
 event Burned(address indexed token, uint256 amount);
 
 event SubmissionSettled(

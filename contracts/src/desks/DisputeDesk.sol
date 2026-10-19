@@ -394,7 +394,8 @@ contract DisputeDesk is Desk {
             if (!ok) continue;
             if (bonusTask != 0) {
                 if (sweet == address(0)) sweet = _bank().sweetener();
-                try IVoterBonus(sweet).claimVoter(bonusTask, payTo) {} catch {}
+                // an add-on may come during the review (after the submission): ask the sweetener on every acceptance
+                if (sweet.code.length != 0) try IVoterBonus(sweet).claimVoter(bonusTask, payTo) {} catch {}
             }
             any = true;
             imdTotal += imdShare;
@@ -413,7 +414,7 @@ contract DisputeDesk is Desk {
 
     /// @dev Books the voter reward of `payTo` on `subId`. Nothing to claim: reverts (NotFinal / NothingToClaim) when
     ///      `strict`, else returns ok = false. `rewShare` includes the reward-fee share (both in the reward currency).
-    ///      `bonusTask`: the task id when the submission was accepted with a $YOLO add-on (its bonus has a voter pool).
+    ///      `bonusTask`: the task id when the submission was accepted (a $YOLO add-on, if any, has a voter pool).
     function _claimVoter(uint256 subId, address payTo, bool strict)
         private
         returns (bool ok, address currency, uint256 imdShare, uint256 rewShare, uint256 bonusTask)
@@ -443,7 +444,7 @@ contract DisputeDesk is Desk {
         emit VoterRewardClaimed(subId, payTo, n, imdShare, rewShare, feeShare);
         currency = s.currency;
         rewShare += feeShare;
-        if (s.addon != 0 && s.outcome == Outcome.Accepted) bonusTask = s.taskId;
+        if (s.outcome == Outcome.Accepted) bonusTask = s.taskId;
     }
 
     // ================================================================== for the case desk and the question builder
@@ -530,6 +531,11 @@ contract DisputeDesk is Desk {
 
     function getSettlement(uint256 subId) external view returns (Settlement memory) {
         return _settlements[subId];
+    }
+
+    /// @notice IMD each side's own dispute bond already paid to the swarm for its calls (taken off what it gets back).
+    function sideSpent(uint256 subId) external view returns (SideSpent memory) {
+        return _sideSpent[subId];
     }
 
     function votesOf(uint256 subId, address payTo) external view returns (uint256 accept, uint256 reject) {
@@ -626,8 +632,9 @@ contract DisputeDesk is Desk {
         bool hasCaller = a.appellant != address(0);
         bool callerWins = hasCaller && a.sidesDoer == doerWins;
         // a stranger appellant (not the doer, not the submission's one disputer)
-        // who wins the appeal gets 0.5 IMD off the top of the loser's bond first (their swarm-call fee back), the
-        // rest of the split follows as usual. Not a general fee refund (everyone else gets none).
+        // who wins the appeal gets up to 0.5 IMD off the top of the loser's bond first (their swarm-call fee back),
+        // only if something is left in the loser's IMD bond (it may have paid the loser's own unanswered call: then
+        // nothing), the rest of the split follows as usual. Not a general fee refund (everyone else gets none).
         bool appellantIsStranger = hasCaller && a.appellant != f.doer && a.appellant != d.disputer;
 
         (uint256 penaltyImd, uint256 winnerBondsImd) =

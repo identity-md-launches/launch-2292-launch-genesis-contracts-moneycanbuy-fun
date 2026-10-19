@@ -53,8 +53,8 @@ interface ITaskVault {
 
     // ---- submissions (CaseDesk)
 
-    /// @notice The bond a new submission to `taskId` would need now: 0.5 IMD fixed + 3% R (and 3% of a $YOLO
-    ///         add-on), no oracle.
+    /// @notice The bond a new submission to `taskId` would need now: 0.5 IMD fixed + 3% R (R = the author's own
+    ///         share of the pot in the task currency; a $YOLO add-on is not part of it), no oracle.
     function quoteSubmission(uint256 taskId) external view returns (Bond memory bond);
 
     /// @notice Submit a proof with a bond (0.5 IMD + 3% R, see `quoteSubmission`). `proofUri` is one link in the
@@ -118,6 +118,9 @@ interface ITaskVault {
     function getDisputer(uint256 subId, address who) external view returns (DisputerInfo memory);
     function getAppeal(uint256 subId) external view returns (Appeal memory);
     function getSettlement(uint256 subId) external view returns (Settlement memory);
+    /// @notice IMD each side's own dispute bond already paid to the swarm for its calls: the doer's and the
+    ///         disputer's bond give back that much less, and a side's next call is paid in full from the wallet.
+    function sideSpent(uint256 subId) external view returns (SideSpent memory);
     function votesOf(uint256 subId, address payTo) external view returns (uint256 accept, uint256 reject);
     function voterClaimed(uint256 subId, address payTo) external view returns (bool);
     function hasVoted(uint256 subId, address voter) external view returns (bool);
@@ -127,7 +130,9 @@ interface ITaskVault {
     function tokenVoted(uint256 subId, uint256 tokenId) external view returns (bool);
     /// @notice VotePower: who may vote with an NFT now (owner or delegate.xyz delegate).
     function votePower() external view returns (address);
-    /// @notice Dispute bond of `subId`. Appealing or calling the swarm costs the same bond plus `quoteSwarmFee`.
+    /// @notice Dispute bond of `subId`. A stranger appealing or calling the swarm posts this bond plus `quoteSwarmFee`
+    ///         (on an IMD task its `rew` part is IMD too). The doer and the disputer post no second bond: a side's
+    ///         first call is paid out of its own bond, a repeat call takes the whole fee from the wallet (`sideSpent`).
     function quoteDisputeBond(uint256 subId) external view returns (Bond memory);
     /// @notice Live swarm fee (IMD) for questions about `subId`; 0 = the Intake does not sell the action now.
     function quoteSwarmFee(uint256 subId) external view returns (uint256);

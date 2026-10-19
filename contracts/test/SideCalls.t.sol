@@ -360,4 +360,29 @@ contract SideCallsTest is Base {
         assertEq(imd.balanceOf(swarmPayee), 3 * PRICE);
         _claimEverythingAndCheck();
     }
+
+    /// view sideSpent: what each side's own bond already paid the swarm (reaudit logic #5). A void call spends
+    /// nothing, a repeat call from the wallet does not count, a stranger's call never does.
+    function test_SideSpent_View() public {
+        _warp(24 hours);
+        vault.poke(t);
+        assertEq(vault.sideSpent(s).doer, 0);
+        assertEq(vault.sideSpent(s).disputer, 0);
+        _callSwarm(dave, s, false); // the disputer's first: his bond
+        assertEq(vault.sideSpent(s).disputer, PRICE);
+        assertEq(vault.sideSpent(s).doer, 0);
+        _silent(s);
+        vault.poke(t);
+        _callSwarm(doer, s, true); // the doer's first: his bond
+        assertEq(vault.sideSpent(s).doer, PRICE);
+        _silent(s);
+        vault.poke(t);
+        _callSwarm(dave, s, false); // the disputer's second: his wallet, the bond spends no more
+        assertEq(vault.sideSpent(s).disputer, PRICE);
+        assertEq(vault.sideSpent(s).doer, PRICE);
+        _answer(s, false);
+        vault.poke(t);
+        assertEq(vault.sideSpent(s).disputer, PRICE, "kept after settlement");
+        _claimEverythingAndCheck();
+    }
 }

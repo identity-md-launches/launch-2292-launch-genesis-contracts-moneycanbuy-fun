@@ -147,16 +147,17 @@ touches the task, at most 8 transitions per call; `poke(taskId)` does only that.
   cannot keep the money locked.
 - **Who pays:** the caller pays the live Intake price in IMD, capped by their `maxImdIn`. The gas of a lazily asked
   appeal question is paid by whoever makes that call. **Swarm fees are not refunded**, silent questions included;
-  the one exception: a third party (neither the doer nor the disputer) who asked the swarm and whose side wins gets 0.5 IMD
-  (`bondFixedImd`) from the loser's IMD bond before the split. A side of the dispute that calls the swarm pays the
+  the one exception: a third party (neither the doer nor the disputer) who asked the swarm and whose side wins gets up to 0.5 IMD
+  (`bondFixedImd`) from what is left of the loser's IMD bond before the split (nothing left, spent on the loser's own
+  unanswered call = no refund). A side of the dispute that calls the swarm pays the
   fee out of the bond it already posted. The treasury pays nothing.
 - **Appeal voided:** if at ask time the live price exceeds the prepaid fee, is 0, or the Intake fails, the appellant
   gets bond and fee back, the NFT decision stands and a new 24 h appeal window starts. A void appeal counts toward
   the three like a silent question: a broken Intake cannot keep a submission open appeal after appeal; after the
   third void appeal the NFT decision is final.
 - **Question:** built on chain from stored data only: `<prefix>TASK: definitions task, task_proof and task_no |
-  PROOF: <link> | PROOF TYPE: <type> | DOER: <address> | DOER CODE: IMD-<taskId>-<doer address> | CASE:
-  <task>/<sub>/<nonce>`; the task's three rule texts go to `definitions` (`task`, `task_proof`, `task_no`), party
+  PROOF: <link> | PROOF TYPE: <type> | DOER: <address> | CASE: <task>/<sub>/<nonce>`; the label `moneycanbuy.fun`
+  is the same for every doer and optional unless the rules ask for it; the task's three rule texts go to `definitions` (`task`, `task_proof`, `task_no`), party
   texts go to `definitions` marked untrusted. Body asks a 7-agent panel with quorum 5, bool answer.
 - **Answer binding:** the callback must come from the Intake the question was sent to, for a known, unanswered
   request id; otherwise ignored, never reverts. The attestation must be a bool 0/1, from a panel ≥ 7 with quorum ≥ 5,
@@ -166,8 +167,8 @@ touches the task, at most 8 transitions per call; `poke(taskId)` does only that.
 - **Timeout and silence:** an answer counts if its signed time (clamped to [asked, recorded]) is within 6 h of the
   ask and it reached the vault within 1 h after that (`SWARM_DELIVERY_GRACE`). Silence = no such answer by 7 h after
   the ask (silence from that moment), or no answer recorded and the Intake already reports the request completed
-  (silence from then). Nothing turns silent while an answer signed in time can still count, so the outcome never
-  depends on who pokes when. A window after an answer starts when it was recorded on chain.
+  (silence from the first call to the vault that sees it, at most 7 h after the ask). Nothing turns silent while an
+  answer signed in time can still count. A window after an answer starts when it was recorded on chain.
 - **Silence on a call / appeal:** the caller's fee stays spent, their bond and unspent fee are credited back, the phase goes back to NoDecision or Decided and a new 24 h
   window starts from the moment of silence. Repeats are allowed, each at the new caller's cost, up to three
   questions in all.
@@ -191,7 +192,7 @@ stays as a credit.
 | Doer stake condition | at submission (`_stakeBps`): the share depends on the doer's lock power at that moment (`YoloLockHub.powerAt`, also for a queued submission; power = $YOLO locked × lock weeks / 52) against the author's own reward in $YOLO (the bond base: no $YOLO add-on, no others' top-ups), a non-$YOLO reward converted at the $YOLO price parameter at submission; any power above 0 counts, no threshold, and a share that rounds down to 0 bps still settles as a staked doer (`Submission.staked`); no $YOLO price or a hub that fails = no stake; a doer who put money into the task gets the bonus as usual; the share is stored as `Submission.stakeBps`. At payout: `YoloLockHub.stakePower(doer, submittedAt)` must not be 0 (the same lock, never withdrawn, still running) | `YoloLockHub.sol`; `VaultTypes.sol` |
 | Where a burn goes | $YOLO to the `BuybackBurner`, waits for `burnYolo`; ETH, USDC, IMD straight to the buyback wallet in the same transaction; a revert there (no `receive`) falls back to the `BuybackBurner`, for its own `forward` | `TaskVault.sol` |
 | $YOLO the treasury would get | sent by the vault to the `BuybackBurner` for `burnYolo`, never in `treasuryPot`: on a $YOLO task the whole fee that is not the doer's or the NFT's burns | `TaskVault.sol` |
-| Loser's bonds (penalty) | split separately in IMD and in the reward currency, no swarm fee refund; a third party who asked the swarm and whose side wins first gets 0.5 IMD of the loser's IMD bond; the losing side's own swarm fees already went to the swarm out of its bond | `desks/DisputeDesk.sol` |
+| Loser's bonds (penalty) | split separately in IMD and in the reward currency, no swarm fee refund; a third party who asked the swarm and whose side wins first gets up to 0.5 IMD from what is left of the loser's IMD bond (nothing left, spent on the loser's own unanswered call = no refund); the losing side's own swarm fees already went to the swarm out of its bond | `desks/DisputeDesk.sol` |
 | ...the NFT decided and the final outcome agrees with it | 50% to the winning side pro rata to bonds, 50% to the correct NFT votes | `desks/DisputeDesk.sol`, `_splitCurrency` |
 | ...NFT undecided or wrong (also the tie: NoDecision and nobody called, or the third question silent) | 100% to the winning side; on a tie the doer wins, so all disputer bonds go to them | `desks/DisputeDesk.sol`; `desks/CaseDesk.sol` |
 | Winner who put money into the task | gets their share like any winner (the doer, an appellant or a disputer who is the author or a contributor) | `_settleDecided`, `desks/DisputeDesk.sol` |
@@ -255,7 +256,7 @@ implies.
 | Swarm questions per submission | 3 | `VaultTypes.sol` |
 | Doer stake share | 4% × min(1, power / the author's reward in $YOLO) of R and of the add-on, from any power, no threshold; the share is whole bps, rounded down | `VaultTypes.sol`; `desks/CaseDesk.sol` |
 | Reasons in a swarm question | the one disputer's reason and proof link; `maxClaims` (10) bounds the body-size check | `desks/DisputeDesk.sol`; `VaultParams.sol` |
-| Swarm question text | ≤ 2000 bytes: `prefix + maxTextBytes ≤ 1726` (one user text, the proof link; fixed part at most 274 bytes, `QUESTION_FIXED`) | `VaultParams.sol` |
+| Swarm question text | ≤ 2000 bytes: `prefix + maxTextBytes ≤ 1807` (one user text, the proof link; fixed part at most 193 bytes, `QUESTION_FIXED`) | `VaultParams.sol` |
 | Swarm request body | ≤ 16,384 bytes (worst case checked when parameters are set) | `VaultParams.sol` |
 | Swarm panel | ≥ 7 agents, quorum ≥ 5 | `VaultParams.sol`; `helpers/AttestationChecker.sol` |
 | BuybackBurner buyback wallet | current value `0x027E55f01e8Cf808E5D2a2Ad68E5e7f67fD6dF6E` | `script/LaunchPlan.sol` `PROJECT_BUYBACK`; `BuybackBurner.sol` |
@@ -335,18 +336,49 @@ implies.
 
 ## Known limitations
 
+These are rules of the protocol as written, with the reason each one does not pay off as an abuse.
+
 - A holder of 20+ NFTs can dispute an honest submission from a second wallet and vote alone to take the NFT 5% of the
-  reward that otherwise goes to the treasury; this is economically irrational (20 NFTs at about $5k each for about $3
-  on a $100 task), so it is not prevented.
-- A submission nobody disputes within 24 h is accepted without a vote; predictors on WON'T DO protect themselves by
-  disputing.
-- An appeal not asked within 6 h is voided with a full refund and reopens the 24 h appeal window (at most 3 asks per
-  submission, a voided appeal counts as one); queued submissions are judged one after another, so a task with junk
-  submissions can hold the reward for days; anyone can ask a pending appeal to end it.
-- One dispute per submission: later disputes revert, and the swarm question carries the first disputer's reason;
-  anyone can still pay to call the swarm, which judges the submission against the task.
-- `cancelTask` by the dev wallet is allowed in any open phase; swarm fees already spent are not refunded.
-- `YoloLockHub` counts a started week as a whole week of lock power (up to 1/52 of an added amount).
+  reward that otherwise goes to the treasury: 20 NFTs at about $5k each for about $3 on a $100 task.
+- A submission nobody disputes within 24 h is accepted without a vote: for those 24 h the doer's bond (0.5 IMD + 3% of
+  the author's reward) is open to anyone, including every WON'T DO predictor, who disputes a fake and takes a share of it.
+- An appeal not asked within 6 h is voided with a full refund and reopens the 24 h appeal window (at most 3 swarm calls
+  per submission, a voided appeal counts as one); queued submissions are judged one after another, so junk submissions
+  can hold a reward for days: holding pays no one, every junk submission puts its bond at stake, and anyone can ask a
+  pending appeal to end it.
+- One dispute per submission: later disputes revert, and the swarm question carries the first disputer's reason; a weak
+  dispute still puts its own bond at stake, and anyone can pay to call the swarm, which judges the submission against
+  the task.
+- The disputer may call the swarm for the doer like any third party (a new bond + the swarm fee); if the swarm sides
+  with the doer, the disputer gets that bond back and a winner's share of the penalty pro rata to bonds, so they still
+  lose most of their own dispute bond (on a $10,000 task: $75 + 0.25 IMD of it to the doer instead of $100 + 0.5 IMD)
+  and pay one more swarm fee.
+- A third party who calls the swarm and wins gets up to 0.5 IMD back, only from what is left of the loser's IMD bond;
+  if the loser spent it on their own unanswered call, there is no refund: that IMD already went to the swarm, nobody
+  keeps it.
+- The swarm fee is the live Intake price, capped by the payer's `maxImdIn`; if the price at the ask is above what was
+  prepaid, or the Intake fails, the appeal is void with bond and fee back and counts as one of the 3 swarm calls: the
+  payer loses nothing but gas.
+- The swarm question's `questionHash` formula and size limits are the IMD Intake's (2,000 characters of question, 512
+  bytes per definition); every user text is capped on chain (`prefix + maxTextBytes ≤ 1807`, 1..512 bytes per text),
+  so no user can make a question the Intake refuses.
+- If the Intake reports a question completed without an answer, the moment of silence is the first call to the vault
+  that sees it, at most 7 h after the ask; the next window starts from it: it moves a timer, never money, and anyone
+  can make that call at once.
+- The pairing of an answer with its question is guaranteed by the Intake: only the Intake's callback can deliver an
+  answer, so no user can attach an answer to another question.
+- The doer's stake bonus is checked at payout: the lock must still run at the call that pays out; the doer may make
+  that call, and without a running lock the fee goes as without a stake (to the treasury), never to whoever called.
+- `cancelTask` by the dev wallet is allowed in any open phase; every deposit goes back to whoever made it except swarm
+  fees already spent, and the dev wallet takes nothing in any outcome.
+- `YoloLockHub` counts a started week as a whole week of lock power: at most 1/52 of an added amount more power, for a
+  bonus capped at 4% of the reward, while the $YOLO stays locked.
+- The protocol does not check that a proof was made after the task was created: proving the task was done is on the
+  doer, a submission without enough proof earns no reward, and an old post or another person's post fails through a
+  dispute and the swarm's verdict.
+- `YoloPredict` has no per-address limit: on a task only one person can do, that person may take WON'T DO from a second
+  wallet and not do the task; a WILL DO position on such a task is a bet on that one person, and its risk is on whoever
+  took it (the losing pool splits by the rules of YOLO Predict below).
 
 ## Deployment layout (four launches)
 
@@ -377,7 +409,7 @@ Gas of each whole factory transaction, fork rehearsal through the live IMD Proje
 | 2 | 14.88M | 1.90M |
 | 3 | 9.23M | 7.55M |
 
-A fix in launch 2 hits the EIP-170 size limit of 24,576 bytes before the gas cap (DisputeDesk has 3,177 bytes left,
+A fix in launch 2 hits the EIP-170 size limit of 24,576 bytes before the gas cap (DisputeDesk has 3,087 bytes left,
 `ReviewLaunch.test_L1_perContractCodeMargin_matchesDoc`, `docs/LAUNCH-TASK.md`). Launch 1 holds 8 of the factory's 8 contracts: no room. Paths: the
 IMD swarm launch (`docs/LAUNCH-TASK.md`: the four launch texts) or `script/DeployMainnet.s.sol` with a local factory.
 
@@ -411,6 +443,6 @@ the task's timers through the public `poke` before it settles; no owner. Full ru
   never enter the task's reward, so they change no fee, bond or limit.
 
 **Unverified** (not provable from this repository): the `questionHash` formula of the IMD plane; how the real swarm
-panel treats the `DOER CODE` rule, invalid bodies and screenshots; the live Intake price in IMD and the fork gas
+panel treats the `moneycanbuy.fun` label, invalid bodies and screenshots; the live Intake price in IMD and the fork gas
 figures are measurements quoted from other docs, not code; the v4 pool key constants (`script/LaunchPlan.sol`, taken from a factory
 launch, not checked here).

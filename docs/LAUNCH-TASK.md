@@ -58,8 +58,8 @@ launches of the platform (0.3–1.5%).
 
 The swarm's changes will hit the 24,576-byte per-contract limit (EIP-170) before the gas cap: by gas, launch 2 could
 take ~8.8 KB more new code (216 gas per byte, `ReviewLaunch.test_F2_marginalGasPerRuntimeByte`). Size headroom (`ReviewLaunch.test_L1_perContractCodeMargin_matchesDoc`):
-**DisputeDesk 3,177 bytes**, TaskVault 3,997, CaseDesk 4,612, YoloLockHub 21,426; YoloSweetener 17,828, DareTrophy
-12,799, ProtocolDirectory 20,030, HiddenList 20,787, YoloPredict 18,590, TrophyCatalog 20,348; the support contracts from 11,023
+**DisputeDesk 3,087 bytes**, TaskVault 3,975, CaseDesk 4,543, YoloLockHub 21,353; YoloSweetener 17,828, DareTrophy
+12,799, ProtocolDirectory 20,030, HiddenList 20,787, YoloPredict 18,503, TrophyCatalog 20,348; the support contracts from 11,024
 (ParamsRegistry) up. A swarm change of more than 3.1 KB in DisputeDesk breaks launch 2 on size. Launch 1 has eight of
 the eight contracts the factory allows; launch 2 has four, launch 3 six. Launch 0 has six of eight, all under 4 KB
 (NftGate 1,916, vestings 1,888 to 1,936, YoloSplitter 2,113); YoloToken is 4,015.
@@ -90,6 +90,7 @@ Known and accepted by design: the snapshot is written by the project wallet from
 The tests must keep passing: forge test (<TEST_COUNT>), and forge test with FORK_URL set to a mainnet archive RPC: contracts/test/fork/LaunchRehearsal.fork.t.sol runs all four launches through the live ProjectFactory (launchContracts, launchCustom, launchContracts, launchContracts), checks each against the 16,777,216 gas cap (this one about 3.6M), splits the remainder and checks every share, and trades the token's opening and first hour through the live Universal Router with a snapshot of real NFT holders, buys with IMD, USDC and ETH routed through IMD.
 
 Audit it as it arrived. Adapt only what the launch rules or a reproduced audit finding require, and record each change in ADAPTATION.md. Do not change the shares, the schedules, the allowance per NFT, the recipients or the constructor arguments, and do not add an owner, a pause, an upgrade path or a fee, unless a reproduced finding requires it; record it in ADAPTATION.md.
+Known limitations listed in docs are accepted rules, not findings; do not change them.
 ```
 
 ## Launch 1 text (`custom_token`, $YOLO + support contracts)
@@ -124,6 +125,7 @@ Every constructor takes only addresses and integers, with no external call. None
 The tests must keep passing: forge test (<TEST_COUNT>), and forge test with FORK_URL set to a mainnet archive RPC: contracts/test/fork/LaunchRehearsal.fork.t.sol runs all four launches through the live ProjectFactory, checks each against the 16,777,216 gas cap (this one ~12.7M), trades YOLO's first hour through the live Universal Router (real NFT holders, edges of minutes 30 and 60, exact taxes), runs tasks end to end and sends the burner's ETH, USDC and IMD to the buyback wallet.
 
 Audit it as it arrived. Adapt only what the launch rules or a reproduced audit finding require, and record each change in ADAPTATION.md. Without such a finding do not change the token, its supply, the gate, the taxes or the schedule, the economics, the recipients, the parameter values, bounds or timelock, the prices or constructor arguments, nor add an owner, a pause, an upgrade path, minting or a fee.
+Known limitations listed in docs are accepted rules, not findings; do not change them.
 ```
 
 ## Launch 2 text (`evm_contracts`, core)
@@ -148,6 +150,7 @@ Known trust assumptions, accepted by design: the swarm attester key set in Param
 The tests must keep passing: forge test (<TEST_COUNT> including invariants of the money buckets), and forge test with FORK_URL set to a mainnet archive RPC, which runs this launch through the live ProjectFactory against the 16,777,216 gas cap (about 14.9M) and tasks end to end. Keep the launch under the cap; DisputeDesk has about 3.1 KB left under the 24,576-byte contract size limit.
 
 Audit it as it arrived. Adapt only what the launch rules or a reproduced audit finding require, and record each change in ADAPTATION.md. Do not change fees, the fee split, the stake bonus, bonds, windows, shares, limits, recipients, the parameter values, the currencies, the constructor arguments or the split into these four contracts, and do not add an owner, a pause, an upgrade path, minting or a fee, unless a reproduced finding requires it; record it in ADAPTATION.md.
+Known limitations listed in docs are accepted rules, not findings; do not change them.
 ```
 
 ## Launch 3 text (`evm_contracts`, $YOLO modules)
@@ -180,6 +183,7 @@ No $YOLO module nor HiddenList has an owner, an admin, a pause or an upgrade pat
 The tests must keep passing: forge test (<TEST_COUNT>), and forge test with FORK_URL set to a mainnet archive RPC, which runs this launch through the live ProjectFactory against the 16,777,216 gas cap (under 9.3M).
 
 Audit it as it arrived. Adapt only what the launch rules or a reproduced audit finding require, and record each change in ADAPTATION.md. Do not change the fees, the bonus and market splits, the price of a trophy, the catalog's owner, the burns, the recipients, the directory's timelock or owner, the hide list's quorum, cooldown or vote window, or the constructor arguments, and do not add an owner, a pause, an upgrade path, minting or a fee, unless a reproduced finding requires it; record it in ADAPTATION.md.
+Known limitations listed in docs are accepted rules, not findings; do not change them.
 ```
 
 ## Placeholders between launches

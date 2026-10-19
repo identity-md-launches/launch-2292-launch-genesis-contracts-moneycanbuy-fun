@@ -15,8 +15,9 @@ import {Params, ParamsCore, ParamsBounds, LaunchParams} from "./VaultParams.sol"
 ///         - `newTasksPaused` stops task creation only; everything else keeps working.
 ///         - The owner has no function that moves, freezes or redirects deposited money.
 ///         - Trust (docs/MECHANICS.md "Trust assumptions"): the attester set is global, so a change reaches the swarm
-///           answers of tasks already running (at least one attester always stays); and a new version may name other
-///           counterparties (intake, nft, delegateRegistry, devPrices), which then judge every task created under it.
+///           answers of tasks already running (at least one attester always stays); and a new version may name another
+///           intake or devPrices, which then serve every task created under it. The version's nft and delegateRegistry
+///           fields are not read: NFT votes always go through the DisputeDesk's immutable VotePower.
 contract ParamsRegistry is Ownable2Step {
     uint256 public constant TIMELOCK = 48 hours;
 

@@ -13,7 +13,7 @@ unlocks. What $YOLO is used for inside the product is in [docs/YOLO.md](YOLO.md)
 | Liquidity | 15% | 150,000,000 | the factory pool at launch, locked forever |
 | Stabilizer / MM fund | 15% | 150,000,000 | unlocked at launch |
 | Swarm | 10% | 100,000,000 | the factory's share, at launch |
-| Dev | 7.777777% | 77,777,777 | linear over 12 months |
+| Dev | 7.7777777% | 77,777,777 | linear over 12 months |
 | Future team | 5% | 50,000,000 | linear over 12 months |
 | **Total** | **100%** | **1,000,000,000** | |
 

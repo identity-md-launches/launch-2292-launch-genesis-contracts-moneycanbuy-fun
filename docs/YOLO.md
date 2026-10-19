@@ -86,7 +86,7 @@ Every vesting clock starts when `YoloSplitter.split` pays it, right after launch
 | Pool | 15% (150M) | YOLO/IMD Uniswap v4 pool, single-sided, locked for good by the factory | `script/LaunchPlan.sol` `YOLO_POOL_BPS` |
 | Incentives | 25% (250M) | project-run incentives, unlocked by vesting: 62.5M (a quarter) at once, 187.5M linear over 24 months, to the incentives wallet | `token/Vestings.sol` `IncentivesVesting` |
 | Stabilizer / MM fund | 15% (150M) | a labeled wallet, at once, no vesting | `token/YoloSplitter.sol` |
-| Dev | 7.777777% (77,777,777) | linear over 12 months, no cliff | `token/Vestings.sol` `DevVesting` |
+| Dev | 7.7777777% (77,777,777) | linear over 12 months, no cliff | `token/Vestings.sol` `DevVesting` |
 | Future team | 5% (50M) | linear over 12 months, no cliff | `token/Vestings.sol` `TeamVesting` |
 | Treasury | the rest, 22.2222223% (222,222,223) | a third at once (74,074,074), the rest linear over 12 months, no cliff | `token/Vestings.sol` `TreasuryVesting` |
 
@@ -185,9 +185,9 @@ module's YOLO balance always equals the unpaid bonuses plus the unclaimed NFT sh
 never leaves before its deadline.
 
 **Call-outs.** A call-out is a dare to one named person: the existing X post (or X reply) template with
-"by @handle" instead of "any account", plus the doer code in the post. Its author pays an ordinary reward (the
-usual per-currency minimum: 5 USDC, 0.002 ETH, 1 IMD, 1,000 YOLO); others add to it with Sweeten. The code binds
-the post to the submitting address, so only whoever the named account posted the code for can submit it.
+"by @handle" instead of "any account", plus moneycanbuy.fun in the post. Its author pays an ordinary reward (the
+usual per-currency minimum: 5 USDC, 0.002 ETH, 1 IMD, 1,000 YOLO); others add to it with Sweeten. The @handle
+binds the post to the named person; whoever hands it in first is the doer, a wrong submitter is a matter for the dispute.
 
 ## Trophies
 

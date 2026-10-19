@@ -82,7 +82,7 @@ library LaunchPlan {
     // 30-60 buy and sell tax 30% -> 0 to the project wallet, then a plain ERC-20 (YoloToken)
     uint256 internal constant YOLO_SUPPLY = 1_000_000_000e18;
     // shares: swarm 10% and pool 15% by the
-    // factory, the project's 75% through the YoloSplitter: incentives 25% (vesting), Stabilizer 15%, dev 7.777777%, team
+    // factory, the project's 75% through the YoloSplitter: incentives 25% (vesting), Stabilizer 15%, dev 7.7777777%, team
     // 5%, treasury the rest (22.2222223%)
     uint16 internal constant YOLO_POOL_BPS = 1_500;
     // the opening valuation of the 1B YOLO in IMD (`economics.initialMarketCapWei` of launch 1, policy 250..250,000)

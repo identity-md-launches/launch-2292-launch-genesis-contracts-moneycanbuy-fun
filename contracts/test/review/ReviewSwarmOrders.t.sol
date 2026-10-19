@@ -19,7 +19,7 @@ contract ReviewSwarmOrders is Test {
     string constant ONCHAIN =
         "Ethereum mainnet tx from DOER to 0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7; calls transfer(address,uint256); transfers at least 10 tokens to any address; succeeded, mined after 2026-10-11 00:00 UTC";
     string constant LINK =
-        unicode"Web page; page contains: “Ask the oracle”; https, live at check; DOER CODE on the page";
+        unicode"Web page; page contains: “Ask the oracle”; https, live at check; moneycanbuy.fun on the page";
     string constant TX = "https://etherscan.io/tx/0x0f7efe38f007c795e60cc01f900e4c7eeb3a74418879e9d7dfbd5c527225fb5b";
     address constant SENDER = 0xcF472E2a100E7C97d3440F34eb21be470b8335a5; // from of TX
     address constant OTHER = 0xE132be23CE6255930556a45406075E62fb6340C0; // not the sender of TX
@@ -73,7 +73,7 @@ contract ReviewSwarmOrders is Test {
         q3.claimProofs[0] = "https://etherscan.io/tx/0x0f7efe38f007c795e60cc01f900e4c7eeb3a74418879e9d7dfbd5c527225fb5b";
         q3.doerNote = "The Transfer log of the transaction shows 379.22 IMD sent from my address.";
         bytes32 h3 = _print("T3", q3);
-        // T4: a public page without the DOER CODE -> expected false
+        // T4: a public page without moneycanbuy.fun -> expected false
         bytes32 h4 = _print("T4", _q(LINK, "https://imd.fun/docs/", "link", SENDER, KIND_FIRST));
         assertEq(h1, HASH_T1);
         assertEq(h2, HASH_T2);
@@ -81,8 +81,8 @@ contract ReviewSwarmOrders is Test {
         assertEq(h4, HASH_T4);
     }
 
-    bytes32 constant HASH_T1 = 0x47707dca90ae38e5906e60dc636bfb03a6529297d2dfd27826b2be7c1eadcf2e;
-    bytes32 constant HASH_T2 = 0x85666a1c4b4a9d268ab1e65ba46a0a8fc4f6c8f09fe4ccc17d2df44555358212;
-    bytes32 constant HASH_T3 = 0x24ddc09c3c8a7ddfc8e65201e50ebd3c46267c2cdc455a0eee8b7acf158cc504;
-    bytes32 constant HASH_T4 = 0x10533850851b9481fe59ba01e4d7f74747b15498a925e6153086f2443ed3052c;
+    bytes32 constant HASH_T1 = 0xa1933e4ec480ea25caf1087dce50c9512ed824068f322625106cafdbd0481290;
+    bytes32 constant HASH_T2 = 0x1b10bbc7c997e3280595fe5d37903d881ca68f1837eb1d1824c210d7a3294fa5;
+    bytes32 constant HASH_T3 = 0x6e278515b0b6d7255fd225586712efcb4cf919434bb9c04dfa67d56ebd14a8d1;
+    bytes32 constant HASH_T4 = 0xb906b9c93ee6564e7409f6d83e27e0d02e23e72376f4866b84122a935ccc1d86;
 }

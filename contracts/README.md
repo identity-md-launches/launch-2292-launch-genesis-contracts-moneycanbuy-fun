@@ -111,9 +111,9 @@ screenshot link: `https://`, host = from `https://` to the first `/`, `?`, `#` o
 (`HostNotAllowed` otherwise).
 
 Swarm question: `<prefix>TASK: definitions task, task_proof and task_no | PROOF: <proofUri> | PROOF TYPE: <x_post|video|onchain_tx|link> | DOER:
-0x… | DOER CODE: IMD-<taskId>-<DOER, 0x + 40 hex lowercase> | CASE: t/s/n`. The contract computes the doer code
-itself. The default prefix tells the panel the post, video description or page must contain the whole DOER CODE, and
-for `onchain_tx` the transaction must be sent from DOER. Fixed parts are at most `ParamsBounds.QUESTION_FIXED` bytes
+0x… | CASE: t/s/n`. The default prefix tells the panel the label `moneycanbuy.fun` (in the post, the video description,
+the page or on paper in the frame) is optional and counts only if the task condition requires it, and for `onchain_tx`
+the transaction must be sent from DOER. Fixed parts are at most `ParamsBounds.QUESTION_FIXED` bytes
 at the largest ids, and the parameter bounds keep the whole body within the Intake limits; the worst question is
 built directly in `ReviewQuestionSize` and `EvidenceTest`.
 
@@ -159,7 +159,8 @@ burns; $YOLO the Treasury would get is burned (`docs/MECHANICS.md`). The doer's 
 
 The losing side's Bonds (plus the Bond of a losing swarm caller) form the penalty, split separately in IMD and in the
 reward currency. Swarm fees are not refunded; a third-party appellant (neither the doer nor the disputer) who wins
-first gets 0.5 IMD of the loser's IMD bond. Then: NFT vote right: 50% to the winners pro rata to their Bonds, 50% to
+first gets up to 0.5 IMD from what is left of the loser's IMD bond (nothing left, spent on the loser's own unanswered
+call = no refund). Then: NFT vote right: 50% to the winners pro rata to their Bonds, 50% to
 the correct votes; otherwise (NFT wrong or undecided, the tie included) everything to the winners. A winner who also
 funded the task gets their share like any winner. The Reward never goes to
 a disputer. One dispute per submission: the first disputer whose transaction lands.

@@ -6,7 +6,7 @@ import {ParamsBounds} from "../src/VaultParams.sol";
 
 /// @dev Title, condition, proof type and the proof format checked at submit; what reaches the swarm question.
 contract TaskFieldsTest is Base {
-    string internal constant COND = "Post a thread on X about IMD with the doer code in the last post";
+    string internal constant COND = "Post a thread on X about IMD with moneycanbuy.fun in the last post";
     string internal constant TX = "0x5f3a9c0d2b7e41a8c6f09d3e7b25a1c4e8f60b9d2a7c3e15f4b8d06a9c2e7f13";
 
     function setUp() public override {
@@ -293,9 +293,10 @@ contract TaskFieldsTest is Base {
         }
     }
 
-    /// @dev The question carries the doer code exactly as the site shows it: IMD-<task>-<doer address, lowercase>.
-    function test_SwarmQuestion_DoerCode() public {
-        address d = 0xabCDeF0123456789AbcdEf0123456789aBCDEF01; // checksummed (mixed case), lowercase in the code
+    /// @dev The question carries DOER (lowercase) and no doer code; the prompt says the label moneycanbuy.fun is
+    ///      optional unless the condition requires it.
+    function test_SwarmQuestion_DoerNoCode() public {
+        address d = 0xabCDeF0123456789AbcdEf0123456789aBCDEF01; // checksummed (mixed case), lowercase in the question
         _fund(d); // the doer bond's rew part is in the task's own currency (USDC here), not IMD
         uint256 t = _task("Title", COND, PROOF_X_POST);
         vm.prank(d);
@@ -305,21 +306,12 @@ contract TaskFieldsTest is Base {
         _warp(24 hours);
         vault.poke(t);
         bytes memory q = _question(_previewBody(s, COND));
-        string memory code = string.concat("IMD-", vm.toString(t), "-0xabcdef0123456789abcdef0123456789abcdef01");
+        assertTrue(_has(q, " | DOER: 0xabcdef0123456789abcdef0123456789abcdef01 | CASE: "));
+        assertFalse(_has(q, "DOER CODE"));
         assertTrue(
             _has(
                 q,
-                bytes(
-                    string.concat(
-                        " | DOER: 0xabcdef0123456789abcdef0123456789abcdef01 | DOER CODE: ", code, " | CASE: "
-                    )
-                )
-            )
-        );
-        assertTrue(
-            _has(
-                q,
-                "must contain the whole DOER CODE (a part of it does not count); for PROOF TYPE onchain_tx the transaction must be sent from DOER"
+                "is optional: it counts only if the task condition requires it, and its absence alone is not a reason for no. For PROOF TYPE onchain_tx the transaction must be sent from DOER."
             )
         );
     }
@@ -344,20 +336,20 @@ contract TaskFieldsTest is Base {
         bytes memory q = _question(_previewBody(s, cond));
         uint256 prefix = vault.paramsOf(1).questionPrefix.length;
         uint256 fixedPart = q.length - prefix - bytes(proof).length; // the rules are definitions
-        // ids here are short: the worst case lengthens the task id (it is in the question twice: DOER CODE and CASE)
+        // ids here are short: the worst case lengthens the task id (it is in the question once, in CASE)
         // and the submission id to 20 digits (uint64), the nonce to 10 (asks + 1, uint32)
-        uint256 worstFixed = fixedPart + 2 * (20 - bytes(vm.toString(t)).length) + (20 - bytes(vm.toString(s)).length)
+        uint256 worstFixed = fixedPart + (20 - bytes(vm.toString(t)).length) + (20 - bytes(vm.toString(s)).length)
             + (10 - bytes(vm.toString(uint256(_sub(s).asks) + 1)).length);
         assertEq(worstFixed, ParamsBounds.QUESTION_FIXED);
-        assertEq(uint256(1_726 + ParamsBounds.QUESTION_FIXED), uint256(2_000));
+        assertEq(uint256(1_807 + ParamsBounds.QUESTION_FIXED), uint256(2_000));
 
-        // prefix + maxTextBytes (the proof) <= 1726
+        // prefix + maxTextBytes (the proof) <= 1807
         Params memory p = defaultParams();
         p.maxTextBytes = 256;
-        p.questionPrefix = bytes(_bytes("q", 1_726 - 256));
+        p.questionPrefix = bytes(_bytes("q", 1_807 - 256));
         vm.prank(multisig);
         registry.proposeParams(p); // at the bound: accepted
-        p.questionPrefix = bytes(_bytes("q", 1_726 - 255));
+        p.questionPrefix = bytes(_bytes("q", 1_807 - 255));
         vm.prank(multisig);
         vm.expectRevert(abi.encodeWithSelector(ParamsBounds.ParamOutOfBounds.selector, "questionPrefix"));
         registry.proposeParams(p);

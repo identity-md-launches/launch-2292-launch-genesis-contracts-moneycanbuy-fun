@@ -1051,7 +1051,7 @@ contract LaunchRehearsalForkTest is Test {
         ImdPay memory none;
         vm.prank(OWNER);
         uint256 taskId = vault.createTask(
-            yolo, r, uint64(vm.getBlockTimestamp() + 7 days), "YOLO task", rulesOf("Post the doer code on X"), 0, 3, "", none
+            yolo, r, uint64(vm.getBlockTimestamp() + 7 days), "YOLO task", rulesOf("Post moneycanbuy.fun on X"), 0, 3, "", none
         );
         Evidence memory noEvidence;
         // maxBondRew caps the bond's `rew` part (CostAboveMax otherwise), which is doerBondBps percent of R in R's
@@ -1093,7 +1093,7 @@ contract LaunchRehearsalForkTest is Test {
         IERC20(LaunchPlan.IMD).approve(address(vault), type(uint256).max);
 
         ImdPay memory none;
-        TaskRules memory rules = rulesOf("Post the doer code on X");
+        TaskRules memory rules = rulesOf("Post moneycanbuy.fun on X");
         vm.prank(author);
         uint256 taskId = vault.createTask(
             LaunchPlan.IMD, 10e18, uint64(vm.getBlockTimestamp() + 7 days), "Smoke", rules, 0, 3, "", none

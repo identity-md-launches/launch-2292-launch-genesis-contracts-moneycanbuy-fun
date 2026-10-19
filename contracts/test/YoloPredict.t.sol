@@ -340,10 +340,9 @@ contract YoloPredictTest is Base {
     // A market voids only when the dev wallet cancels the task (Unwound, CancelTask.t.sol); a stuck dispute
     // resolves by its own timers (Emergency.t.sol covers that path generically).
 
-    /// A winning side whose points all rounded to zero counts as nobody on it (no division by zero): the losing
-    /// pool goes by the empty-side rule (WON'T DO won, empty -> all to the author), the zero-point
-    /// winner still gets their own 90% back, the loser nothing.
-    function test_TotalPointsRoundingToZero_EmptySideRuleInsteadOfReverting() public {
+    /// A winning side whose points all rounded to zero is not empty (reaudit money #1): no division by zero,
+    /// the losing pool is split by position among its winners, the author gets nothing from it, the loser nothing.
+    function test_TotalPointsRoundingToZero_SplitByPositionInsteadOfReverting() public {
         uint256 longDeadline = uint64(_now() + 1_000_000_000); // ~31.7 years: duration dominates a small effPosition
         uint256 t = _createWithDeadline(author, address(imd), 10e18, uint64(longDeadline));
         uint256 dead0 = yolo.balanceOf(DEAD);
@@ -364,8 +363,8 @@ contract YoloPredictTest is Base {
         uint256 bobBefore = yolo.balanceOf(bob);
         vm.prank(bob);
         yoloPredict.claim(t); // must not revert dividing by zero totalPoints
-        assertEq(yolo.balanceOf(bob) - bobBefore, 0.45e18, "zero-point winner: own effPosition back, not a revert");
-        assertEq(yolo.balanceOf(author) - author0, 0.9e18, "no points on WON'T DO: the losing pool to the author");
+        assertEq(yolo.balanceOf(bob) - bobBefore, 0.45e18 + 0.9e18, "zero-point winner: 90% back + the losing pool");
+        assertEq(yolo.balanceOf(author) - author0, 0, "somebody is on WON'T DO: nothing to the author");
         uint256 aliceBefore = yolo.balanceOf(alice);
         vm.prank(alice);
         yoloPredict.claim(t);

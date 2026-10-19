@@ -188,7 +188,7 @@ contract MaxImdInCapTest is Test, AuditDeploy {
             1_000e18,
             uint64(block.timestamp + 365 days),
             "Title",
-            TaskRules("ipfs://task-condition", "PROOF: one https link, DOER CODE on the page", "NO if: unclear"),
+            TaskRules("ipfs://task-condition", "PROOF: one https link, moneycanbuy.fun on the page", "NO if: unclear"),
             0,
             PROOF_LINK,
             "",

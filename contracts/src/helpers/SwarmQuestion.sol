@@ -12,7 +12,7 @@ import {Submission, Task, RuleTexts, RulesMismatch} from "../VaultTypes.sol";
 ///         whoever is asking the swarm now, and are checked against Task.rulesHash / DisputerInfo.reasonHash
 ///         before they ever reach this builder (`SwarmQuestionBuilder.buildFor`):
 ///         {"v":1,"question":"<prefix>TASK: definitions task, task_proof and task_no | PROOF: .. | PROOF TYPE: x_post
-///                             | DOER: 0x.. | DOER CODE: IMD-<task>-<DOER> | CASE: t/s/n",
+///                             | DOER: 0x.. | CASE: t/s/n",
 ///          "definitions":{<template definitions>,"task":"..","task_proof":"..","task_no":"..",
 ///                         "claim_1":"..","claim_1_proof":"..",...,"doer_note":"..",
 ///                         "doer_shot":"<https:// link, allowlisted host>"},
@@ -64,8 +64,6 @@ library SwarmQuestion {
             bytes(q.proofType),
             " | DOER: ",
             bytes(Strings.toHexString(q.doer)),
-            " | DOER CODE: ",
-            doerCode(q.taskId, q.doer),
             " | CASE: ",
             bytes(Strings.toString(q.taskId)),
             "/",
@@ -105,15 +103,6 @@ library SwarmQuestion {
             bytes(Strings.toHexString(q.consumer)),
             '"}}'
         );
-    }
-
-    /// @dev The code that binds a proof to its doer: `IMD-<taskId>-<doer address, 0x + 40 hex lowercase>`, byte for
-    ///      byte what the site shows the doer. The whole address: any shorter
-    ///      part can be ground out (6 hex take seconds), so a thief cannot hand in an honest doer's post
-    ///      first. The prefix tells the panel it must appear in the post / video description / page (onchain_tx: the
-    ///      transaction must be sent from DOER instead).
-    function doerCode(uint256 taskId, address doer) internal pure returns (bytes memory) {
-        return bytes.concat("IMD-", bytes(Strings.toString(taskId)), "-", bytes(Strings.toHexString(doer)));
     }
 
     /// @dev Name of a proof type in the question (the same words the site and the templates use).

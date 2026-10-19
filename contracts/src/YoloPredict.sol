@@ -31,7 +31,7 @@ interface IPredictVault {
 ///         (the dev wallet cancelled the task) -> void: every position comes back in full, 100%
 ///         of what was put in, with no burn and no deferred part (`paidIn`).
 ///         Winners get their 90% plus the losing pool by points (`splits`: remaining/remaining, the last claimant
-///         takes the dust). Nobody on the winning side (no refund
+///         takes the dust; a winning side with 0 points in total splits it by position). Nobody on the winning side (no refund
 ///         of the losing pool): the whole losing pool goes to the author and the doer instead, half each if
 ///         WILL DO won with nobody on it, entirely to the author if WON'T DO won with nobody on it; the losers get
 ///         nothing back. The deferred 5%: task `Completed` -> 2.5% to its author and 2.5% to the accepted doer, even
@@ -206,14 +206,14 @@ contract YoloPredict {
         }
         emit Settled(taskId, res, doer, toAuthor, toDoer, burnt);
 
-        if (res == Resolution.WillDoWon && m.willDoPointsTotal == 0 && m.wontDoPool != 0) {
+        if (res == Resolution.WillDoWon && m.willDoPool == 0 && m.wontDoPool != 0) {
             uint256 pool = m.wontDoPool;
             m.wontDoPool = 0;
             uint256 half = pool / 2;
             if (half != 0) yolo.safeTransfer(task.author, half);
             if (pool - half != 0) yolo.safeTransfer(doer, pool - half);
             emit NoWinner(taskId, res, half, pool - half);
-        } else if (res == Resolution.WontDoWon && m.wontDoPointsTotal == 0 && m.willDoPool != 0) {
+        } else if (res == Resolution.WontDoWon && m.wontDoPool == 0 && m.willDoPool != 0) {
             uint256 pool = m.willDoPool;
             m.willDoPool = 0;
             yolo.safeTransfer(task.author, pool);
@@ -236,6 +236,9 @@ contract YoloPredict {
             bool willDoWon = res == Resolution.WillDoWon;
             pay = willDoWon ? willDoAmount : wontDoAmount;
             uint256 points = willDoWon ? p.willDoPoints : p.wontDoPoints;
+            // a winning side with 0 points in total (every position taken at the last second) splits by position
+            Market storage m = markets[taskId];
+            if ((willDoWon ? m.willDoPointsTotal : m.wontDoPointsTotal) == 0) points = pay;
             if (points != 0) {
                 Split storage sp = _split(taskId, willDoWon);
                 if (sp.pointsLeft != 0) {
@@ -277,6 +280,7 @@ contract YoloPredict {
             sp.started = true;
             sp.poolLeft = willDoWon ? m.wontDoPool : m.willDoPool;
             sp.pointsLeft = willDoWon ? m.willDoPointsTotal : m.wontDoPointsTotal;
+            if (sp.pointsLeft == 0) sp.pointsLeft = willDoWon ? m.willDoPool : m.wontDoPool; // split by position
         }
     }
 

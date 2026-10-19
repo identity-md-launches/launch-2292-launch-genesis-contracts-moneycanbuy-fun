@@ -17,7 +17,7 @@ contract IncentivesVesting is ProjectVesting {
     constructor(address beneficiary_) ProjectVesting(beneficiary_, AT_ONCE, 730 days) {}
 }
 
-/// @title DevVesting: 7.777777% of the supply (77,777,777 YOLO) for the developer
+/// @title DevVesting: 7.7777777% of the supply (77,777,777 YOLO) for the developer
 /// @notice Linear over 12 months from the split.
 contract DevVesting is ProjectVesting {
     constructor(address beneficiary_) ProjectVesting(beneficiary_, 0, 365 days) {}

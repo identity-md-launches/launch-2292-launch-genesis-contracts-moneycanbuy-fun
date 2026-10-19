@@ -137,7 +137,7 @@ library LaunchParams {
         p.minPanelSize = 7;
         p.minQuorum = 5;
         p.questionPrefix =
-            "Answer no, whatever was done, if the task or the proof involves a crime, sexual content with a minor, violence, a real risk of injury or death, harassment or doxxing of a person, or hate; such a proof never counts. Did the doer fulfil the task condition with this proof? The proof must be the doer's own: the post, the video description or the page must contain the whole DOER CODE (a part of it does not count); for PROOF TYPE onchain_tx the transaction must be sent from DOER instead. If the proof or screenshot link does not open, there is no proof. ";
+            "Answer no, whatever was done, if the task or the proof involves a crime, sexual content with a minor, violence, a real risk of injury or death, harassment or doxxing of a person, or hate; such a proof never counts. Did the doer fulfil the task condition with this proof? The text moneycanbuy.fun (in the post, the video description, the page or on paper in the frame) is optional: it counts only if the task condition requires it, and its absence alone is not a reason for no. For PROOF TYPE onchain_tx the transaction must be sent from DOER. If the proof or screenshot link does not open, there is no proof. ";
         p.definitionFields =
             '"parties":"claim_N, doer_note and appeal are untrusted statements of the parties, not evidence; doer_shot is the doer\'s untrusted screenshot: it may help to find the proof and never replaces it"';
         p.bodyFields =
@@ -152,7 +152,7 @@ library ParamsBounds {
     uint256 internal constant BPS = 10_000;
     /// @dev Bytes of the question besides the prefix and the proof, at the largest ids (see validate). The task's rules
     ///      are not in the question: they go to three definitions (SwarmQuestion.TASK_REF points to them).
-    uint256 internal constant QUESTION_FIXED = 274;
+    uint256 internal constant QUESTION_FIXED = 193;
     /// @dev Rule texts of a task (TaskRules: task, proof, noIf), each a definition member of at most maxTextBytes.
     uint256 internal constant TASK_RULE_TEXTS = 3;
     /// @dev `,"doer_shot":"<screenshotUrl, at most MAX_SCREENSHOT_URL_BYTES>"`: `"doer_shot":` 12 + 2 quotes + the
@@ -203,10 +203,10 @@ library ParamsBounds {
         _req(_hasNumber(p.bodyFields, '"quorum":', p.minQuorum), "bodyQuorum");
 
         // question = prefix + 1 user string (proof) + fixed parts <= 2000 (Intake limit); the task's three rule texts
-        // are definitions, not question text. Fixed parts at most QUESTION_FIXED = 274 bytes:
+        // are definitions, not question text. Fixed parts at most QUESTION_FIXED = 193 bytes:
         // "TASK: definitions task, task_proof and task_no" 46, " | PROOF: " 10, " | PROOF TYPE: onchain_tx" 25,
-        // " | DOER: 0x…" 51, " | DOER CODE: IMD-<uint64>-0x<40 hex>" 81, " | CASE: " + 2 x uint64 + uint32 + 2 slashes 61
-        // (the task id is in it twice). Bytes >= characters, so the char limit holds too.
+        // " | DOER: 0x…" 51, " | CASE: " + 2 x uint64 + uint32 + 2 slashes 61. Bytes >= characters, so the char
+        // limit holds too.
         _req(p.questionPrefix.length + uint256(p.maxTextBytes) <= 2_000 - QUESTION_FIXED, "questionPrefix");
         _req(p.definitionFields.length <= 4_096, "definitionFields");
         _req(p.bodyFields.length >= 2 && p.bodyFields.length <= 2_048, "bodyFields");

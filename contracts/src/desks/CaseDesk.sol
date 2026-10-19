@@ -206,7 +206,7 @@ contract CaseDesk is Desk {
             if (block.timestamp < uint256(s.appealedAt) + p.swarmTimeout) return false;
             IDisputeDesk(disputeDesk).dropCaller(subId);
             s.phase = Phase.Decided;
-            s.callFrom = uint64(block.timestamp);
+            s.callFrom = uint64(uint256(s.appealedAt) + p.swarmTimeout); // the window reopens at the void, not the poke
             emit AppealVoided(subId, 0);
             if (++s.asks >= MAX_SWARM_CALLS) _endUncalled(subId);
             return true;
@@ -326,7 +326,12 @@ contract CaseDesk is Desk {
         // the appeal's ask is lazy, due from the moment it was filed (markAppealed); not asked within swarmTimeout
         // it is void (step)
         if (ph == Phase.Appealed) return uint256(s.appealedAt) + p.swarmTimeout;
-        if (ph == Phase.Asked) return uint256(_bank().requests(s.request).askedAt) + p.swarmTimeout + SWARM_DELIVERY_GRACE;
+        if (ph == Phase.Asked) {
+            // an answer in time, or the Intake already closed the request: the next poke plays it now
+            (SwarmStatus st,,) = _swarmStatus(s.request, p);
+            if (st != SwarmStatus.Pending) return block.timestamp;
+            return uint256(_bank().requests(s.request).askedAt) + p.swarmTimeout + SWARM_DELIVERY_GRACE;
+        }
         return type(uint128).max; // not an active step
     }
 
@@ -426,7 +431,9 @@ contract CaseDesk is Desk {
     ///      vault (a window that follows it is never shortened). Silence: no such answer by the end of the grace
     ///      (moment of silence = ask time + timeout + grace), or no answer recorded and the Intake already reports
     ///      the request completed (status 1 / 2; moment of silence = now). Nothing is settled as silent while an
-    ///      answer signed in time can still count, so the outcome is the same whenever anyone pokes.
+    ///      answer signed in time can still count. The outcome does not depend on who pokes when, but in the last
+    ///      case the moment of silence (and the window that follows it) does: the Intake gives no completion time,
+    ///      so it is the first poke after completion, at most swarmTimeout + grace later (7 h by default).
     function _swarmStatus(bytes32 rid, ParamsCore memory p)
         private
         view

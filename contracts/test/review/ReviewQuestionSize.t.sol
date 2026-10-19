@@ -6,18 +6,18 @@ import {SwarmQuestion} from "../../src/helpers/SwarmQuestion.sol";
 import {ParamsBounds} from "../../src/VaultParams.sol";
 
 /// @dev The limit on the swarm question's length at maximal parameters and maximal ids.
-///      The check in `ParamsBounds` promises that the fixed part of the question is no more than 274 bytes
-///      (`QUESTION_FIXED`, DOER CODE with the doer's full address, a link to definitions task / task_proof /
-///      task_no), which means `questionPrefix + maxTextBytes <= 1726` keeps the question within the Intake limit
+///      The check in `ParamsBounds` promises that the fixed part of the question is no more than 193 bytes
+///      (`QUESTION_FIXED`: DOER, CASE, a link to definitions task / task_proof /
+///      task_no), which means `questionPrefix + maxTextBytes <= 1807` keeps the question within the Intake limit
 ///      (2000 characters). The three rule texts of the task live in `definitions` and do not lengthen the
 ///      question. The screenshot and the doer's note live in `definitions` and do not lengthen the question either.
 ///      The test in `TaskFields.t.sol` counts the worst case on short ids and compensates for the task number
-///      once, though the task number appears in the question twice (DOER CODE and CASE). Here the question is
+///      once (it is in the question once, in CASE). Here the question is
 ///      built directly with ids of the limiting types (`taskId`, `subId` uint64, `nonce` = `asks + 1` uint32),
 ///      with no guesswork.
 contract ReviewQuestionSize is Test {
     uint256 internal constant INTAKE_LIMIT = 2_000;
-    uint256 internal constant FIXED_CLAIM = 274; // the promise made in ParamsBounds
+    uint256 internal constant FIXED_CLAIM = 193; // the promise made in ParamsBounds
     uint256 internal constant PREFIX_BOUND = INTAKE_LIMIT - FIXED_CLAIM; // ParamsBounds: prefix + maxTextBytes
 
     function _input(uint256 taskId, uint256 subId, uint256 nonce, string memory task, string memory proof)
@@ -56,8 +56,8 @@ contract ReviewQuestionSize is Test {
         assertLe(question.length, INTAKE_LIMIT);
     }
 
-    /// @dev The fixed part of the question at limiting ids equals exactly the promised 274 bytes, not one byte more.
-    function test_FixedPartIs234BytesAtMaxIds() public {
+    /// @dev The fixed part of the question at limiting ids equals exactly the promised 193 bytes, not one byte more.
+    function test_FixedPartIs193BytesAtMaxIds() public {
         SwarmQuestion.Input memory q = _input(
             type(uint64).max, type(uint64).max, uint256(type(uint32).max) + 1, _chars("c", 512), _chars("p", 512)
         );
@@ -69,16 +69,15 @@ contract ReviewQuestionSize is Test {
         assertEq(FIXED_CLAIM, ParamsBounds.QUESTION_FIXED);
     }
 
-    /// @dev The task number appears in the question twice: in DOER CODE and in CASE. The growth of the fixed part
-    ///      for a long number is twice what the test in `TaskFields.t.sol` counts (there the compensation is single).
-    function test_TaskIdCountsTwiceInFixedPart() public {
+    /// @dev The task number appears in the question once, in CASE.
+    function test_TaskIdCountsOnceInFixedPart() public {
         string memory task = _chars("c", 256);
         string memory proof = _chars("p", 256);
         (bytes memory shortBody,) = SwarmQuestion.build(_input(1, 1, 1, task, proof));
         (bytes memory longBody,) = SwarmQuestion.build(_input(type(uint64).max, 1, 1, task, proof));
         uint256 grew = _question(longBody).length - _question(shortBody).length;
         emit log_named_uint("bytes added by a 20-digit task id", grew);
-        assertEq(grew, 2 * (20 - 1));
+        assertEq(grew, 20 - 1);
     }
 
     function _question(bytes memory body) internal pure returns (bytes memory q) {
