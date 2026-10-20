@@ -6,15 +6,15 @@ import "./Base.t.sol";
 /// @dev "Sweeten with $YOLO": a YOLO bonus on top of any task. Paid on the
 ///      accepted submission by the reward's rule: 90% to the doer, 5% to the NFT votes if the NFT decided right, the
 ///      rest burned (the treasury's $YOLO); a doer whose lock earned them the stake bonus on the reward (the share
-///      fixed at the submission, 4% x min(1, power / the pot in $YOLO, add-on not counted),
+///      fixed at the submission, 4% x min(1, power / (the pot in $YOLO + the add-on)),
 ///      `Settlement.stakeBps`) and who
 ///      never sweetened the task gets that share of it more. Locked like
 ///      the reward until the deadline; back to each sweetener after an expiry or an unwind. No cap, no notice.
 contract SweetenerTest is Base {
     uint8 internal constant ACCEPT = 1;
     uint8 internal constant REJECT = 2;
-    /// @dev The ETH reward's $YOLO-equivalent gives 250k; the 1M add-on does not count against the power:
-    ///      250k is already the whole 4%, 2M is well above it.
+    /// @dev The ETH reward's $YOLO-equivalent gives 250k; with a 1M or 1.5M add-on the power base is 1.25M or
+    ///      1.75M: 2M is the whole 4%.
     uint256 internal constant STAKE = 2_000_000e18;
     uint256 internal t;
 
@@ -205,15 +205,15 @@ contract SweetenerTest is Base {
         _claimEverythingAndCheck();
     }
 
-    /// Part power (62,500 for a year: a quarter of the 250k reward; the 1M add-on not counted):
-    /// 1% more, 91% to them, 9% burned. Small power (50k for 13 weeks = 12,500 against 0.01 ETH = 250k):
-    /// no threshold, 12,500 / 250k of 4% = 0.2%, the same share of the bonus: 90.2% to them,
+    /// Part power (312,500 for a year: a quarter of the 250k reward + the 1M add-on = 1.25M):
+    /// 1% more, 91% to them, 9% burned. Small power (250k for 13 weeks = 62,500 against 0.01 ETH = 250k + the 1M
+    /// add-on): no threshold, 62,500 / 1.25M of 4% = 0.2%, the same share of the bonus: 90.2% to them,
     /// 9.8% burned.
     function test_StakedDoer_PartPowerAndSmallPower() public {
         vm.prank(doer);
-        hub.lock(62_500e18, 52);
+        hub.lock(312_500e18, 52);
         vm.prank(doer2);
-        hub.lock(50_000e18, 13);
+        hub.lock(250_000e18, 13);
         _warp(1);
         _sweeten(alice, t, 1_000_000e18);
         uint256 s = _submit(doer, t);

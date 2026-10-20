@@ -714,7 +714,7 @@ contract DisputeDesk is Desk {
 
     /// @dev Accepted: R - 10% to the doer, in the reward currency. Of the 10% fee: nftFeeBps (5%)
     ///      to the correct votes after a dispute the NFT decided right; the other 5% is the stakers' part. A doer
-    ///      whose submission had a stake (`Facts.staked`; bonus `Facts.stakeBps`, 4% x min(1, power / the whole reward at submission in $YOLO),
+    ///      whose submission had a stake (`Facts.staked`; bonus `Facts.stakeBps`, 4% x min(1, power / (the whole reward + the $YOLO add-on at submission, in $YOLO)),
     ///      CaseDesk, may floor to 0 bps) and
     ///      whose lock still runs (YoloLockHub.stakePower) gets that share of R from that part, even if they put money
     ///      into this task themselves, the rest of it is

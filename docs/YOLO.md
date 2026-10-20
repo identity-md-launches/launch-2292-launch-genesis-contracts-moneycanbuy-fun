@@ -55,9 +55,9 @@ project, carried out by its wallets in public transactions; no contract enforces
    the outcome, 5% waits for the outcome (2.5% to the author and 2.5% to the doer if the task is done, otherwise
    burned), 90% is split among the winners; if the task is unwound, every position comes back in full.
 7. **Doer stake** (`YoloLockHub`, launch 2). A doer locks YOLO for 1 to 52 weeks; the lock's power (amount × weeks
-   / 52, fixed at the lock) at their submission earns them 4% × min(1, power / the reward in YOLO) of the
-   reward from the fee: the whole 4% once the power is worth the task's whole reward at the submission (the pot with
-   every top-up, no YOLO add-on), less in proportion below it, from any power. The rest of the stakers' 5% goes half to the burn, half
+   / 52, fixed at the lock) at their submission earns them 4% × min(1, power / (the reward in YOLO + the YOLO
+   add-on)) of the reward and of the add-on from the fee: the whole 4% once the power is worth the task's whole reward
+   at the submission (the pot with every top-up) plus its YOLO add-on, less in proportion below it, from any power. The rest of the stakers' 5% goes half to the burn, half
    to the treasury. The share is fixed by the CaseDesk at submission; at payout the DisputeDesk only checks that
    the same lock still runs, and the vault books it from the fee it holds.
 8. **Burner** (`BuybackBurner`, launch 1). The burn shares paid in ETH, USDC or IMD go from the vault's payout
@@ -153,7 +153,7 @@ whole YOLO). It changes by a transaction of the DevPrices owner, with an event, 
 used elsewhere in the contract are protocol parameters the same way. There is no cap on $YOLO's price.
 
 **Where the price is read.** Only at a submission, for the doer stake bonus: the task's whole reward (the pot) converted to
-$YOLO at the price parameter, fixed in the submission (`desks/CaseDesk.sol`, `_stakeBps`). Without a $YOLO price
+$YOLO at the price parameter (the $YOLO add-on is added as is), fixed in the submission (`desks/CaseDesk.sol`, `_stakeBps`). Without a $YOLO price
 that bonus is 0; tasks, top-ups, bonds, bonuses (`YoloSweetener.sol`) and YOLO Predict markets in any
 currency (`YoloPredict.sol`) read no price. The reward minimum is a separate per-currency protocol parameter —
 1,000 YOLO for this currency. 
@@ -176,7 +176,7 @@ rules follow the reward's.
 | Accepted submission | anyone calls `payout(taskId)` (the accepted submission is the task's `activeSub`). The whole bonus goes by the reward's rule: 10% fee; of it 5% to the NFT votes on "accept" if the NFT decided right (claimed here by `claimVoter(taskId, payTo)`, pro rata to their votes), the rest burns (the treasury's YOLO income); if the vault paid the doer the stake bonus on this submission (`Settlement.stakeBps`), they get the same share of the bonus as usual, even if they sweetened it themselves | `YoloSweetener.sol` |
 | Expired or unwound task | each sweetener takes back their own (also an open task past its deadline with no submission in flight, which the vault expires at its next call) | `YoloSweetener.sol` |
 | YOLO Predict's 5% | never come here: YoloPredict pays the author and the doer itself | `YoloSweetener.sol` |
-| Binding | takes deposits only once bound to the vault (`TaskVault.bindSweetener`, after launch 3); the add-on is not in the bonds (the author's own reward) and not in the base of the stake power (the pot); the doer's stake bonus is paid on the add-on too; there is no limit on the add-on | `YoloSweetener.sol`; `TaskVault.sol` |
+| Binding | takes deposits only once bound to the vault (`TaskVault.bindSweetener`, after launch 3); the add-on is not in the bonds (the author's own reward) and is in the base of the stake power (with the pot); the doer's stake bonus is paid on the add-on too; there is no limit on the add-on | `YoloSweetener.sol`; `TaskVault.sol` |
 | Owner, admin | none; the module reads the vault and plays its timers (`vault.poke`), and changes nothing else in it | `YoloSweetener.sol` |
 
 The module plays the task's timers itself (`vault.poke` at the start of `sweeten`, `withdraw` and `payout`). Tested by
@@ -243,7 +243,7 @@ it if the lock still runs.
 | Lock | `lock(add, weeks)`: adds YOLO (pulled by `transferFrom`) and/or sets the end to 1-52 weeks from now; the end only moves later, the amount only grows; a lock that ended needs a new term | `YoloLockHub.sol` |
 | Withdrawal | `withdraw()`: the whole amount once the lock ended; nothing before, no notice | `YoloLockHub.sol` |
 | Power | amount × term in weeks / 52, fixed when the lock is set and constant until its end unless the lock is changed; extending sets it to the whole amount × weeks left / 52; adding without a new term sets it to power + added × weeks left / 52; read from the lock as it stood strictly before the moment asked; every change is checkpointed | `YoloLockHub.sol` |
-| Bonus share | fixed at the submission: b = 4% × min(1, power / R in $YOLO), R = the task's whole reward at the submission (the pot: the author's share and every top-up; no $YOLO add-on); a reward in ETH, USDC or IMD converted at the $YOLO price parameter at submission. Any power counts, there is no threshold; no $YOLO price means no bonus; a doer who contributed to the task's reward gets the bonus as usual | `desks/CaseDesk.sol`; `VaultTypes.sol` |
+| Bonus share | fixed at the submission: b = 4% × min(1, power / (R in $YOLO + A)), R = the task's whole reward at the submission (the pot: the author's share and every top-up), A = the task's $YOLO add-on at the submission; a reward in ETH, USDC or IMD converted at the $YOLO price parameter at submission. Any power counts, there is no threshold; no $YOLO price means no bonus; a doer who contributed to the task's reward gets the bonus as usual | `desks/CaseDesk.sol`; `VaultTypes.sol` |
 | Paid at payout if | the same lock (never withdrawn) still runs (`stakePower(who, since)`) | `YoloLockHub.sol`; `desks/DisputeDesk.sol` |
 | Split | the doer gets b of R, the rest of the stakers' 5% (5% − b) half burned, half to the treasury; the NFT 5% nobody earned burns; on a $YOLO reward the treasury half burns too | `desks/DisputeDesk.sol` |
 | Examples, $100 USDC, no dispute | power worth $100: doer 94, burn 0.50 + NFT 5, treasury 0.50; worth $50: doer 92, burn 1.50 + 5, treasury 1.50; worth $5: doer 90.20, burn 2.40 + 5, treasury 2.40 | `test/YoloLockHub.t.sol`, `test/MoneyRules.t.sol` (`test_WorkedExamples`) |

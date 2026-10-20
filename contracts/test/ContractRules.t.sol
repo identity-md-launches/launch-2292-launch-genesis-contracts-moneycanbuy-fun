@@ -9,7 +9,7 @@ import "./Base.t.sol";
 ///             accepted doer is paid it, it never goes back to the contributor; the doer's bond stays 3% of the
 ///             author's own reward; a decided task takes no top-up.
 ///         (3) the stake power is measured against the task's whole reward at the submission (the pot with
-///             every top-up), no $YOLO add-on; the bonus share is paid on the whole reward and on the add-on. Base prices: $YOLO at $0.0001, $100 = 1M $YOLO.
+///             every top-up) plus its $YOLO add-on; the bonus share is paid on the whole reward and on the add-on. Base prices: $YOLO at $0.0001, $100 = 1M $YOLO.
 contract ContractRulesTest is Base {
     uint8 internal constant REJECT = 2;
 
@@ -110,16 +110,16 @@ contract ContractRulesTest is Base {
         _claimEverythingAndCheck();
     }
 
-    /// (3) an example: author $100 USDC + a $YOLO add-on worth $50 (500k), power worth $100 (1M for a year):
+    /// (3) an example: author $100 USDC + a $YOLO add-on worth $50 (500k), power worth $150 (1.5M for a year):
     ///     the whole 4%, paid on both: $94 of the reward and 94% of the add-on (470k $YOLO).
-    function test_AddonNotInPowerBase_FullBonusOnBoth() public {
-        _lock(doer, 1_000_000e18, 52);
+    function test_AddonInPowerBase_FullBonusOnBoth() public {
+        _lock(doer, 1_500_000e18, 52);
         _warp(1);
         uint256 t = _create(author, address(usdc), 100e6);
         vm.prank(alice);
         sweetener.sweeten(t, 500_000e18);
         uint256 s = _submit(doer, t);
-        assertEq(_sub(s).stakeBps, 400, "1M of power against the author's 1M: the add-on not counted");
+        assertEq(_sub(s).stakeBps, 400, "1.5M of power against the reward's 1M + the 500k add-on");
         _warp(24 hours);
         vault.poke(t);
         assertEq(uint8(_sub(s).outcome), uint8(Outcome.Accepted));
@@ -168,6 +168,41 @@ contract ContractRulesTest is Base {
         _topUp(bob, t2, 995e6);
         uint256 s2 = _submit(dave, t2);
         assertEq(_sub(s2).stakeBps, 400, "power worth the whole pool: the whole 4%");
+        _claimEverythingAndCheck();
+    }
+
+    /// (3) a big add-on on a small reward: 1,000 $YOLO reward + a 10M $YOLO add-on. A lock worth the reward only
+    ///     (1,000 for a year) is 1,000 / 10,001,000 of 4% = 0 bps: no bonus out of the add-on (90% of it, not 94%).
+    ///     The full 4% needs power worth the reward plus the add-on: 10,001,000.
+    function test_BigAddon_BonusNeedsLockAgainstRewardPlusAddon() public {
+        _lock(doer, 1_000e18, 52);
+        _lock(dave, 10_001_000e18, 52);
+        _warp(1);
+        uint256 t = _create(author, address(yolo), 1_000e18);
+        vm.prank(alice);
+        sweetener.sweeten(t, 10_000_000e18);
+        uint256 s = _submit(doer, t);
+        assertEq(_sub(s).stakeBps, 0, "1,000 against 1,000 + 10M: floors to 0");
+        assertTrue(_sub(s).staked);
+        _warp(24 hours);
+        vault.poke(t);
+        assertEq(uint8(_sub(s).outcome), uint8(Outcome.Accepted));
+        assertEq(vault.getSettlement(s).stakeBps, 0);
+        uint256 b0 = yolo.balanceOf(doer);
+        sweetener.payout(t);
+        assertEq(yolo.balanceOf(doer) - b0, 9_000_000e18, "90% of the add-on, no stake share");
+
+        uint256 t2 = _create(author, address(yolo), 1_000e18);
+        vm.prank(alice);
+        sweetener.sweeten(t2, 10_000_000e18);
+        uint256 s2 = _submit(dave, t2);
+        assertEq(_sub(s2).stakeBps, 400, "power worth the reward plus the add-on: the whole 4%");
+        _warp(24 hours);
+        vault.poke(t2);
+        assertEq(uint8(_sub(s2).outcome), uint8(Outcome.Accepted));
+        b0 = yolo.balanceOf(dave);
+        sweetener.payout(t2);
+        assertEq(yolo.balanceOf(dave) - b0, 9_400_000e18, "94% of the add-on");
         _claimEverythingAndCheck();
     }
 }

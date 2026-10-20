@@ -425,7 +425,7 @@ contract YoloLockHubTest is Base {
         _claimEverythingAndCheck();
     }
 
-    // The $YOLO add-on is not in the power base, others' top-ups are: test/ContractRules.t.sol.
+    // The $YOLO add-on and others' top-ups are in the power base: test/ContractRules.t.sol.
 
     /// The power is fixed at the submission, also for a queued one: locked 1M for half a year (500k, 2%), submitted
     /// into the queue, 1M more added while queued: still 2% when it is activated and accepted.

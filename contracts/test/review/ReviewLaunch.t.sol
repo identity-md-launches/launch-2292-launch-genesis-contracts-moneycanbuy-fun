@@ -100,7 +100,7 @@ contract ReviewLaunchStatic is Test {
     // `forge build --sizes` whenever the code changes (via-ir shifts untouched contracts too: whole-program opt).
     uint256 constant DOC_MARGIN_DISPUTE = 3_087; // vote by NFT ids; quote views in CaseDesk; view sideSpent
     uint256 constant DOC_MARGIN_VAULT = 3_975; // top-ups join the pot at once, `potOf`
-    uint256 constant DOC_MARGIN_CASE = 4_543; // the whole pot on acceptance (`potOf`), no stake threshold, power vs the whole pot
+    uint256 constant DOC_MARGIN_CASE = 4_512; // the whole pot on acceptance (`potOf`), no stake threshold, power vs the whole pot plus the add-on
     uint256 constant DOC_MARGIN_HUB = 21_357; // YoloLockHub (a lock with checkpoints and epochs), launch 2
     uint256 constant DOC_MARGIN_SWEETENER = 17_828;
     uint256 constant DOC_MARGIN_TROPHY = 12_799;

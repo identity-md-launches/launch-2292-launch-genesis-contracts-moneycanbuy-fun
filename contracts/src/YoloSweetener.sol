@@ -36,7 +36,7 @@ interface ISweetenedVault {
 ///           NFT decided right (claimed here, `claimVoter`, pro rata to their votes), the rest goes to the vault's
 ///           burner, where it waits for anyone's "Burn" (the treasury's $YOLO income is burned); if the vault paid the doer the stake bonus on this
 ///           submission, they get the same share of the bonus even if they sweetened this task themselves.
-///           (`Settlement.stakeBps`: 4% x min(1, power / the whole reward at submission in $YOLO)). The 5%
+///           (`Settlement.stakeBps`: 4% x min(1, power / (the whole reward + the $YOLO add-on at submission, in $YOLO))). The 5%
 ///           of YOLO Predict positions never come here: YoloPredict pays them itself.
 ///         Takes deposits only once the vault bound it (`TaskVault.bindSweetener`): only then does the core read the
 ///         add-on with the reward, and pays the stake bonus share on it.

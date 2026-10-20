@@ -58,10 +58,10 @@ contract CaseDesk is Desk {
     /// @notice Submit a proof (irrevocable). Bond = 0.5 IMD fixed + 3% of the author's own reward in R's currency:
     ///         top-ups of others and the $YOLO add-on are not in it; always the same, no escalation for rejected
     ///         submissions or the queue. No oracle, no USD conversion.
-    ///         The doer stake bonus is fixed here too (`stakeBps`): 4% x min(1, power / R in
-    ///         $YOLO), the power of the doer's lock as it stood before this block, R = the task's whole reward at this
-    ///         moment (the pot: the author's share and every top-up; no $YOLO add-on)
-    ///         converted at the dev-set $YOLO price (DevPrices: no oracle, no sample window);
+    ///         The doer stake bonus is fixed here too (`stakeBps`): 4% x min(1, power / (R in $YOLO + the $YOLO
+    ///         add-on)), the power of the doer's lock as it stood before this block, R = the task's whole reward at this
+    ///         moment (the pot: the author's share and every top-up) converted at the dev-set $YOLO price
+    ///         (DevPrices: no oracle, no sample window), the add-on = the task's $YOLO add-on at this moment;
     ///         any power counts, no threshold; no $YOLO price = no bonus (the only
     ///         DevPrices read of a submission; it never blocks a submission).
     ///         `minReward` protects against a top-up merging into the pot between the quote and the transaction;
@@ -506,7 +506,7 @@ contract CaseDesk is Desk {
     ///      own reward gets the bonus too. Never
     ///      blocks a submission: a hub or a DevPrices that fails counts as no stake.
     ///      The power is measured against the whole pot at the submission (`t.pot`: the author's share and every
-    ///      top-up), without the $YOLO add-on; the share is paid on the pot and on the add-on.
+    ///      top-up) in $YOLO plus the $YOLO add-on (`t.addon`); the share is paid on the pot and on the add-on.
     ///      `staked`: any power with a $YOLO price, also when the share floors to 0 bps (the staked split still applies).
     function _stakeBps(SubmitTerms memory t, address doer, ParamsCore memory p)
         private
@@ -524,6 +524,7 @@ contract CaseDesk is Desk {
             r = y;
         } catch {}
         if (r == 0) return (0, false); // no $YOLO price
+        r += t.addon;
         return (uint16(power >= r ? MAX_STAKE_BONUS_BPS : MAX_STAKE_BONUS_BPS * power / r), true);
     }
 

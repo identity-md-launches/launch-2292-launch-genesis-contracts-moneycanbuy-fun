@@ -830,11 +830,11 @@ contract MoneyRulesTest is Base {
         assertEq(vault.getSettlement(s3).stakeBps, 0);
     }
 
-    /// @notice the power is measured against the pot only, the $YOLO add-on
-    ///         is not counted: $100 + a $100 add-on with 1M of power = the whole 4%, paid on the reward ($94) and on
-    ///         the add-on (900k + 40k $YOLO).
-    function test_AddonNotInPowerBase() public {
-        _stake(doer, STAKE);
+    /// @notice the power is measured against the pot plus the $YOLO add-on: $100 + a $100 add-on with 2M of
+    ///         power = the whole 4%, paid on the reward ($94) and on the add-on (900k + 40k $YOLO); 1M of power on
+    ///         the same task = 2%.
+    function test_AddonInPowerBase() public {
+        _stake(doer, 2 * STAKE);
         uint256 t = _create(author, address(usdc), 100e6);
         vm.prank(alice);
         sweetener.sweeten(t, 1_000_000e18);
@@ -844,6 +844,11 @@ contract MoneyRulesTest is Base {
         uint256 b0 = yolo.balanceOf(doer);
         sweetener.payout(t);
         assertEq(yolo.balanceOf(doer) - b0, 940_000e18);
+        _stake(doer2, STAKE);
+        uint256 t2 = _create(author, address(usdc), 100e6);
+        vm.prank(alice);
+        sweetener.sweeten(t2, 1_000_000e18);
+        assertEq(_sub(_submit(doer2, t2)).stakeBps, 200, "1M against $100 (1M) + the 1M add-on");
     }
 
     /// @notice the stake check never blocks a submission or a payout: a vault whose hub address has no code (a
