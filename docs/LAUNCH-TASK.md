@@ -1,13 +1,13 @@
 # Launch texts for the IMD swarm: four launches
 
-Checked against the code in `contracts/` (Foundry project at the repository root: `foundry.toml`; constructors, `contracts/script/LaunchPlan.sol`, `contracts/test/fork/LaunchRehearsal.fork.t.sol`).
+Checked against the code in `src/` (Foundry project at the repository root: `foundry.toml`, `src/`, `test/`, `script/`, `lib/`; constructors, `script/LaunchPlan.sol`, `test/fork/LaunchRehearsal.fork.t.sol`).
 Where documents disagree, they are not the source: `LaunchPlan.sol` is. The constructor arguments of all four texts
-below are checked by the test `contracts/test/review/ReviewLaunch.t.sol` (`test_L0_docLaunch0Args_matchPlan`,
+below are checked by the test `test/review/ReviewLaunch.t.sol` (`test_L0_docLaunch0Args_matchPlan`,
 `test_L2_docLaunch1Args_matchPlan`, `test_L3_docLaunch2Args_matchPlan`, `test_L5_docLaunch3Args_matchPlan`): there the
 argument strings are copied from this file as they are, the placeholders are replaced with the plan's addresses, and
 the creation code is compared with `LaunchPlan` byte for byte. Change the arguments here, change them there too. That
 the test's strings appear in this file verbatim and that every text fits in 8,000 characters is checked by
-`python3 contracts/script/check-launch-task.py` (it also prints the fingerprints of the texts for the record): under
+`python3 script/check-launch-task.py` (it also prints the fingerprints of the texts for the record): under
 the launch rules Foundry does not read files.
 
 The swarm takes the repository as it is, audits it, changes only what is proven, writes `launch.json` and deploys
@@ -28,7 +28,7 @@ in one transaction through the IMD ProjectFactory (`0xfF03…7120`), 0.5 IMD per
   `DisputeDesk`, `TaskVault`. The hub comes first because the desks name it, and a `$contract:` argument can only
   point to a contract deployed before it. The desks and the vault must be one transaction: TaskVault's constructor
   wires the desks, and a desk accepts wiring only in the transaction that created it (a flag in transient storage,
-  `contracts/src/desks/Desk.sol`).
+  `src/desks/Desk.sol`).
 - **Launch 3** (`evm_contracts`): six contracts in this order: `YoloSweetener` ("Sweeten with $YOLO", a bonus on any
   task), `TrophyCatalog` (the trophy designs), `DareTrophy` (an NFT trophy of an accepted submission, paid in burned
   YOLO), `ProtocolDirectory`, `HiddenList`, `YoloPredict` (WILL DO / WON'T DO positions on a task). The modules need
@@ -69,7 +69,7 @@ the eight contracts the factory allows; launch 2 has four, launch 3 six. Launch 
 ## Launch 0 text (`evm_contracts`, NFT gate, vestings and the $YOLO split)
 
 ```
-Launch the genesis contracts of moneycanbuy.fun from this repository as they are: an evm_contracts launch on Ethereum mainnet (no token), the first of four. They exist before the project token $YOLO: the token's custom_token launch (the second) takes the YoloSplitter below as its remainderTo and the NftGate below as a constructor argument of the token; the core and the $YOLO modules follow as the third and fourth launches. contracts/script/LaunchPlan.sol is all four launches in code (genesisLaunch, then yoloTokenCode and support, then core, then extras).
+Launch the genesis contracts of moneycanbuy.fun from this repository as they are: an evm_contracts launch on Ethereum mainnet (no token), the first of four. They exist before the project token $YOLO: the token's custom_token launch (the second) takes the YoloSplitter below as its remainderTo and the NftGate below as a constructor argument of the token; the core and the $YOLO modules follow as the third and fourth launches. script/LaunchPlan.sol is all four launches in code (genesisLaunch, then yoloTokenCode and support, then core, then extras).
 
 Contracts, in this order:
 1. NftGate, constructorArgs ["0x0000ec93127baa929e58e97dd0095a2bfb38ec1d", "0x3c587Eff6c96eAcF7E3dcC2CFf6416161386E48C"]
@@ -85,9 +85,9 @@ YoloSplitter receives the project's 75% of $YOLO from the factory (the remainder
 
 Constructors take only addresses; the only external call is the YoloSplitter's bindStarter on the four vestings. Nothing here holds funds until the token launch. No owner, admin, pause or upgrade path in any of the six.
 
-Known and accepted by design: the snapshot is written by the project wallet from an off-chain read of ownerOf at one block (contracts/script/snapshot/snapshot.py; the json, its block and snapshotHash are published before trading opens, anyone can recompute them); a wallet holding NFTs in a contract at that block (a vault, a marketplace escrow) is listed as that contract; the incentives wallet is a plain wallet that no mechanic pays from, the contract only unlocks it on schedule.
+Known and accepted by design: the snapshot is written by the project wallet from an off-chain read of ownerOf at one block (script/snapshot/snapshot.py; the json, its block and snapshotHash are published before trading opens, anyone can recompute them); a wallet holding NFTs in a contract at that block (a vault, a marketplace escrow) is listed as that contract; the incentives wallet is a plain wallet that no mechanic pays from, the contract only unlocks it on schedule.
 
-The tests must keep passing: forge test (<TEST_COUNT>), and forge test with FORK_URL set to a mainnet archive RPC: contracts/test/fork/LaunchRehearsal.fork.t.sol runs all four launches through the live ProjectFactory (launchContracts, launchCustom, launchContracts, launchContracts), checks each against the 16,777,216 gas cap (this one about 3.6M), splits the remainder and checks every share, and trades the token's opening and first hour through the live Universal Router with a snapshot of real NFT holders, buys with IMD, USDC and ETH routed through IMD.
+The tests must keep passing: forge test (<TEST_COUNT>), and forge test with FORK_URL set to a mainnet archive RPC: test/fork/LaunchRehearsal.fork.t.sol runs all four launches through the live ProjectFactory (launchContracts, launchCustom, launchContracts, launchContracts), checks each against the 16,777,216 gas cap (this one about 3.6M), splits the remainder and checks every share, and trades the token's opening and first hour through the live Universal Router with a snapshot of real NFT holders, buys with IMD, USDC and ETH routed through IMD.
 
 Audit it as it arrived. Adapt only what the launch rules or a reproduced audit finding require, and record each change in ADAPTATION.md. Do not change the shares, the schedules, the allowance per NFT, the recipients or the constructor arguments, and do not add an owner, a pause, an upgrade path or a fee, unless a reproduced finding requires it; record it in ADAPTATION.md.
 Known limitations listed in docs are accepted rules, not findings; do not change them.
@@ -96,7 +96,7 @@ Known limitations listed in docs are accepted rules, not findings; do not change
 ## Launch 1 text (`custom_token`, $YOLO + support contracts)
 
 ```
-Launch the $YOLO token and support contracts of moneycanbuy.fun as they are: a custom_token launch from this repository on Ethereum mainnet, paired with IMD, the second of four. From launch #<GENESIS_LAUNCH_NUMBER>: the YoloSplitter (remainderTo) and the NftGate (a token argument); the core (YoloLockHub, CaseDesk, DisputeDesk, TaskVault) follows as an evm_contracts launch taking this one's addresses as static arguments, then the $YOLO modules. contracts/script/LaunchPlan.sol is all four launches in code (support is this one).
+Launch the $YOLO token and support contracts of moneycanbuy.fun as they are: a custom_token launch from this repository on Ethereum mainnet, paired with IMD, the second of four. From launch #<GENESIS_LAUNCH_NUMBER>: the YoloSplitter (remainderTo) and the NftGate (a token argument); the core (YoloLockHub, CaseDesk, DisputeDesk, TaskVault) follows as an evm_contracts launch taking this one's addresses as static arguments, then the $YOLO modules. script/LaunchPlan.sol is all four launches in code (support is this one).
 
 Token: contract YoloToken, name "YOLO", symbol YOLO, 18 decimals, constructorArgs ["$poolManager", "<NFT_GATE>", "0x3c587Eff6c96eAcF7E3dcC2CFf6416161386E48C", "<OPEN_AT>"], totalSupply 1000000000000000000000000000 (1,000,000,000 minted once to msg.sender, the factory). No owner, no mint, burn or pause, no list anyone can edit. A buy is a transfer out of the Uniswap v4 PoolManager ($poolManager, compared with nothing), a sell a transfer into it. Trading opens at openAt = <OPEN_AT> (unix seconds, immutable, deployment to +30 days, else BadOpenAt); before it every buy reverts TradingNotOpen(openAt), seeding works. From openAt YoloToken._update taxes buys and sells on a fixed self-ending schedule, in YOLO, to the project wallet 0x3c587Eff6c96eAcF7E3dcC2CFf6416161386E48C fixed at deployment (non-zero):
 - minutes 0-30: only snapshot wallets buy, untaxed. The token reverts SnapshotNotSealed() unless sealedAt() of the NftGate <NFT_GATE> is before openAt, then calls consume(buyer, amount): NotWhitelisted(buyer) outside the snapshot, NftAllowanceExceeded(buyer, left, wanted) above what is left of 500,000 YOLO per NFT for the window. No code at the gate address means no whitelist (a bare test chain), not a switch. Every sell pays 30%.
@@ -109,7 +109,7 @@ Known limits, accepted by design: the gate calls in minutes 0-30 (a fixed addres
 Economics, copied into launch.json exactly: poolBps 1500, initialMarketCapWei 15000000000000000000000, remainderTo <YOLO_SPLITTER>. Pool: fee 12500, tick spacing 60.
 
 Contracts, in this order:
-1. DevPrices, constructorArgs ["0x8Ad18E99F4C8d8406f9Ba8899CF308000518A981", "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7", "$token", "1000000000000000", "2389244350450000000000", "5247665725934671441"]
+1. DevPrices, constructorArgs ["0x8Ad18E99F4C8d8406f9Ba8899CF308000518A981", "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7", "$token", "1000000000000000", "2300000000000000000000", "4440000000000000000"]
 2. UniswapV3SwapAdapter, constructorArgs ["0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"]
 3. ParamsRegistry, constructorArgs ["0x3c587Eff6c96eAcF7E3dcC2CFf6416161386E48C", "0xa43e6f75ee006411f79ac1c84120606c2330de82", "$contract:DevPrices", "$contract:UniswapV3SwapAdapter", "0x0000ec93127baa929e58e97dd0095a2bfb38ec1d", "0x00000000000000447e69651d841bd8d104bed493", "0x3c587Eff6c96eAcF7E3dcC2CFf6416161386E48C", "0x5598aa9146215bc13eb26f2c692ad1461fd32982"]
 4. TextRules, constructorArgs []
@@ -118,11 +118,11 @@ Contracts, in this order:
 7. AttestationChecker, constructorArgs ["$contract:ParamsRegistry"]
 8. BuybackBurner, constructorArgs ["$token", "0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7", "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "$contract:DevPrices", "0x027e55f01e8cf808e5d2a2ad68e5e7f67fd6df6e"]
 
-What each does: DevPrices holds every price the protocol uses, set by hand by its owner, the dev wallet; no oracle. USD per whole YOLO (start 0.001), ETH (start 2,389.2444) and IMD (start 5.2477), USDC fixed at $1; zero is refused and one call moves a price at most 10x up or down, each change an event. Prices never decide who is paid: they only set the stake bonus (a doer's YOLO lock against the reward plus the YOLO add-on). The dev wallet alone may cancel a task (everyone takes back what they put in, the dev wallet gets nothing). The adapter swaps ETH or USDC to IMD for bonds paid in another currency. ParamsRegistry holds versioned parameters (version 1 compiled in) and the swarm answer signers; its owner changes both only behind a 48-hour timelock, inside compiled bounds, and can pause new tasks; it never moves or freezes money, but the signer set is global (a change reaches open cases; the last signer stays). TextRules, SwarmQuestionBuilder and AttestationChecker are stateless helpers. VotePower says who may vote with an identity.md NFT now: its owner or the owner's delegate.xyz v2 delegate; no registration, snapshot, state or owner. BuybackBurner swaps nothing: YOLO burn shares wait there and anyone may call burnYolo() (all YOLO to 0x000000000000000000000000000000000000dEaD); the vault sends ETH, USDC and IMD burn shares straight to the buyback wallet at the payout, and anything stuck there anyone sends on with forward(token) or pull(vault, token); no caller reward. The buyback wallet starts at 0x027E55f01e8Cf808E5D2a2Ad68E5e7f67fD6dF6E; only the DevPrices owner changes it (setBuybackWallet, an event).
+What each does: DevPrices holds every price the protocol uses, set by hand by its owner, the dev wallet; no oracle. USD per whole YOLO (start 0.001), ETH (start 2,300) and IMD (start 4.44), USDC fixed at $1; zero is refused and one call moves a price at most 10x up or down, each change an event. Prices never decide who is paid: they only set the stake bonus (a doer's YOLO lock against the reward plus the YOLO add-on). The dev wallet alone may cancel a task (everyone takes back what they put in, the dev wallet gets nothing). The adapter swaps ETH or USDC to IMD for bonds paid in another currency. ParamsRegistry holds versioned parameters (version 1 compiled in) and the swarm answer signers; its owner changes both only behind a 48-hour timelock, inside compiled bounds, and can pause new tasks; it never moves or freezes money, but the signer set is global (a change reaches open cases; the last signer stays). TextRules, SwarmQuestionBuilder and AttestationChecker are stateless helpers. VotePower says who may vote with an identity.md NFT now: its owner or the owner's delegate.xyz v2 delegate; no registration, snapshot, state or owner. BuybackBurner swaps nothing: YOLO burn shares wait there and anyone may call burnYolo() (all YOLO to 0x000000000000000000000000000000000000dEaD); the vault sends ETH, USDC and IMD burn shares straight to the buyback wallet at the payout, and anything stuck there anyone sends on with forward(token) or pull(vault, token); no caller reward. The buyback wallet starts at 0x027E55f01e8Cf808E5D2a2Ad68E5e7f67fD6dF6E; only the DevPrices owner changes it (setBuybackWallet, an event).
 
 Every constructor takes only addresses and integers, with no external call. None of these eight contracts holds user funds. Supply: the swarm 10%, the pool 15%, the YoloSplitter 75%.
 
-The tests must keep passing: forge test (<TEST_COUNT>), and forge test with FORK_URL set to a mainnet archive RPC: contracts/test/fork/LaunchRehearsal.fork.t.sol runs all four launches through the live ProjectFactory, checks each against the 16,777,216 gas cap (this one ~12.7M), trades YOLO's first hour through the live Universal Router (real NFT holders, edges of minutes 30 and 60, exact taxes), runs tasks end to end and sends the burner's ETH, USDC and IMD to the buyback wallet.
+The tests must keep passing: forge test (<TEST_COUNT>), and forge test with FORK_URL set to a mainnet archive RPC: test/fork/LaunchRehearsal.fork.t.sol runs all four launches through the live ProjectFactory, checks each against the 16,777,216 gas cap (this one ~12.7M), trades YOLO's first hour through the live Universal Router (real NFT holders, edges of minutes 30 and 60, exact taxes), runs tasks end to end and sends the burner's ETH, USDC and IMD to the buyback wallet.
 
 Audit it as it arrived. Adapt only what the launch rules or a reproduced audit finding require, and record each change in ADAPTATION.md. Without such a finding do not change the token, its supply, the gate, the taxes or the schedule, the economics, the recipients, the parameter values, bounds or timelock, the prices or constructor arguments, nor add an owner, a pause, an upgrade path, minting or a fee.
 Known limitations listed in docs are accepted rules, not findings; do not change them.
@@ -131,7 +131,7 @@ Known limitations listed in docs are accepted rules, not findings; do not change
 ## Launch 2 text (`evm_contracts`, core)
 
 ```
-Launch the core of moneycanbuy.fun from this repository as it is: an evm_contracts launch on Ethereum mainnet (no token), the third of four. It uses the token and the contracts of launch #<SUPPORT_LAUNCH_NUMBER> as static arguments; the fourth launch adds modules that only read this vault. contracts/script/LaunchPlan.sol is all four launches in code (core is this one).
+Launch the core of moneycanbuy.fun from this repository as it is: an evm_contracts launch on Ethereum mainnet (no token), the third of four. It uses the token and the contracts of launch #<SUPPORT_LAUNCH_NUMBER> as static arguments; the fourth launch adds modules that only read this vault. script/LaunchPlan.sol is all four launches in code (core is this one).
 
 Contracts, in this order:
 1. YoloLockHub, constructorArgs ["<YOLO>"]
@@ -156,7 +156,7 @@ Known limitations listed in docs are accepted rules, not findings; do not change
 ## Launch 3 text (`evm_contracts`, $YOLO modules)
 
 ```
-Launch the $YOLO modules and directories of moneycanbuy.fun as they are: the $YOLO modules, the version directory, the site's hide list and the trophy design catalog, an evm_contracts launch from this repository on Ethereum mainnet (no token), the last of four. The three $YOLO modules only read the TaskVault of launch #<CORE_LAUNCH_NUMBER>, their first address argument; the registry, the token and the desks they read through it; DareTrophy also reads the catalog. The hide list reads nothing here and nothing here reads it. contracts/script/LaunchPlan.sol is all four launches in code (extras is this one).
+Launch the $YOLO modules and directories of moneycanbuy.fun as they are: the $YOLO modules, the version directory, the site's hide list and the trophy design catalog, an evm_contracts launch from this repository on Ethereum mainnet (no token), the last of four. The three $YOLO modules only read the TaskVault of launch #<CORE_LAUNCH_NUMBER>, their first address argument; the registry, the token and the desks they read through it; DareTrophy also reads the catalog. The hide list reads nothing here and nothing here reads it. script/LaunchPlan.sol is all four launches in code (extras is this one).
 
 Contracts, in this order:
 1. YoloSweetener, constructorArgs ["<TASK_VAULT>"]

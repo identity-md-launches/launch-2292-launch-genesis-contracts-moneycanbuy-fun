@@ -5,12 +5,12 @@ import "./Base.t.sol";
 
 /// @dev `YoloLockHub`: the doer stake as a $YOLO lock.
 /// `lock(add, weeks)`: 1..52
-/// weeks, the end only moves later, the amount only grows, an ended lock may be locked again with a term;
+/// weeks, the end never moves earlier, the amount only grows, an ended lock may be locked again with a term;
 /// `withdraw` only after the end, all of it. Power = amount x term in weeks / 52, fixed at the lock and constant
 /// until its end unless the lock is changed: extending sets it to the whole amount x weeks left / 52, adding without
 /// a term to power + added x weeks left / 52. Read from the lock as it stood strictly before the moment asked
 /// (checkpoints). The CaseDesk fixes the bonus at the submission: b = 4% x min(1, power / R in $YOLO), R = the
-/// whole pot at the submission (no add-on), converted at the DevPrices $YOLO price; any power counts, no threshold. The DisputeDesk pays it if
+/// whole pot at the submission, converted at the DevPrices $YOLO price, plus the $YOLO add-on; any power counts, no threshold. The DisputeDesk pays it if
 /// the same lock still runs (`stakePower(who, since)`); the rest of the stakers' 5% splits half to the burn
 /// (rounded down), half to the treasury. Base prices $YOLO at $0.0001: a $100 reward = 1M $YOLO.
 contract YoloLockHubTest is Base {
@@ -98,7 +98,7 @@ contract YoloLockHubTest is Base {
         assertEq(_end(bob), _now() + 52 * WEEK);
     }
 
-    /// The end only moves later, the amount only grows; adding keeps the end.
+    /// The end never moves earlier, the amount only grows; adding keeps the end.
     function test_EndOnlyLater_AmountOnlyGrows() public {
         uint256 t0 = _now();
         _lock(alice, 100e18, 10);

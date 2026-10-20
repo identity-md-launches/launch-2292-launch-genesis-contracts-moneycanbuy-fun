@@ -1,8 +1,8 @@
 # moneycanbuy.fun mechanics (TaskVault)
 
-The rules as the code enforces them, with a code reference for each one. References are `contracts/src/<file>.sol`
-(function or constant name) written short: paths are relative to `contracts/src/` unless they start with
-`contracts/`, `script/` or `test/`. Values are the launch values (registry version 1, `VaultParams.sol`). The
+The rules as the code enforces them, with a code reference for each one. References are `src/<file>.sol`
+(function or constant name) written short: paths are relative to `src/` unless they start with
+`script/` or `test/`. Values are the launch values (registry version 1, `VaultParams.sol`). The
 project token $YOLO (supply, uses, buy guard, vesting, pool, price as a reward currency) has its own page:
 `docs/YOLO.md`.
 
@@ -268,7 +268,7 @@ implies.
 ## The doer stake and the burner
 
 - **`YoloLockHub`** (launch 2, first contract): a lock with a fixed power. `lock(add, weeks)` adds $YOLO and/or sets
-  the end to 1-52 weeks from now; the end only moves later, the amount only grows; a lock that ended needs a new
+  the end to 1-52 weeks from now; the end never moves earlier, the amount only grows; a lock that ended needs a new
   term. `withdraw()` takes the whole amount once the lock ended, never before. Power = amount × term in weeks / 52,
   set when the lock is set and constant until its end (no decay) unless the lock is changed. Extending (a call
   with a term) sets it to `amount × weeks left / 52`, the whole amount with the weeks actually left; adding without
@@ -372,6 +372,8 @@ These are rules of the protocol as written.
   answer, so no user can attach an answer to another question.
 - The doer's stake bonus is checked at payout: the lock must still run at the call that pays out; the doer may make
   that call, and without a running lock the fee goes as without a stake (to the treasury), never to whoever called.
+- The doer's stake bonus share is fixed at the submission; reward and $YOLO add-on added while that submission is under
+  review are paid to the doer at the same share.
 - `cancelTask` by the dev wallet is allowed in any open phase; every deposit goes back to whoever made it except swarm
   fees already spent, and the dev wallet takes nothing in any outcome.
 - `YoloLockHub` counts a started week as a whole week of lock power: at most 1/52 of an added amount more power, for a

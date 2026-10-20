@@ -5,15 +5,15 @@ vote, Ask the swarm / Appeal, payouts. The rules in words: `docs/MECHANICS.md`, 
 `docs/TOKENOMICS.md`, the launch texts: `docs/LAUNCH-TASK.md`.
 
 ```
-# from the repository root (foundry.toml there); dependencies are git submodules in contracts/lib/
+# from the repository root (foundry.toml there); dependencies are git submodules in lib/
 # (OpenZeppelin 5.1.0, forge-std 1.17.0, v4-core math for the fork rehearsal)
 forge build --sizes
 forge test                                   # every suite; the fork suites skip without FORK_URL
-FORK_URL=<mainnet archive RPC> forge test --match-path "contracts/test/fork/*" -vv   # all four launches via the live factory
+FORK_URL=<mainnet archive RPC> forge test --match-path "test/fork/*" -vv   # all four launches via the live factory
 FOUNDRY_FUZZ_RUNS=5000 forge test --match-contract ScenariosTest            # deep fuzz
 FOUNDRY_INVARIANT_RUNS=300 FOUNDRY_INVARIANT_DEPTH=200 forge test --match-contract InvariantTest
 forge test --match-contract GasTest -vv      # gas of the main functions
-python3 contracts/script/check-launch-task.py   # docs/LAUNCH-TASK.md against contracts/test/review/ReviewLaunch.t.sol
+python3 script/check-launch-task.py            # docs/LAUNCH-TASK.md against test/review/ReviewLaunch.t.sol
 ```
 
 ## Layout for the launch through the IMD swarm

@@ -10,12 +10,12 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 ///         does not change until its end unless the lock is changed: setting a term again (extending) recomputes it
 ///         from the whole amount and the weeks actually left, `amount x weeks left / 52`; adding without a new term
 ///         adds `added x weeks left / 52` to the power. The bonus itself is not computed here:
-///         the CaseDesk reads `powerAt` at a submission and compares it with the task's whole reward in $YOLO
-///         (4% x min(1, power / reward)); the DisputeDesk checks `stakePower` at the payout (the same lock still running, never withdrawn
+///         the CaseDesk reads `powerAt` at a submission and compares it with the task's whole reward at the submission
+///         in $YOLO plus the task's $YOLO add-on (4% x min(1, power / (reward + add-on))); the DisputeDesk checks `stakePower` at the payout (the same lock still running, never withdrawn
 ///         in between: a lock's `epoch` grows at every withdrawal). This contract pays nothing itself.
 ///
-///         `lock(add, weeks)` adds to the amount and/or sets the end to `weeks` from now (1..52); the end can only move
-///         later, the amount only grow; a lock that ended may be locked again. `withdraw` takes the whole amount once
+///         `lock(add, weeks)` adds to the amount and/or sets the end to `weeks` from now (1..52); the end cannot move
+///         earlier, the amount only grow; a lock that ended may be locked again. `withdraw` takes the whole amount once
 ///         the lock ended. Every change is checkpointed, so the power at any past moment can be read back. No owner,
 ///         no admin. Constructor takes $YOLO directly: deployed first in launch 2.
 contract YoloLockHub {

@@ -7,7 +7,7 @@ rules), so this half of the check runs here."""
 import hashlib, os, re, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DOC = os.path.join(ROOT, "..", "docs", "LAUNCH-TASK.md")
+DOC = os.path.join(ROOT, "docs", "LAUNCH-TASK.md")
 TEST = os.path.join(ROOT, "test", "review", "ReviewLaunch.t.sol")
 
 doc = open(DOC, encoding="utf-8").read()

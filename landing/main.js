@@ -53,7 +53,7 @@
   tryPlay();
 })();
 
-// Dare calculator: every number below follows contracts/src/{VaultParams.sol,desks/Desk.sol,
+// Dare calculator: every number below follows src/{VaultParams.sol,desks/Desk.sol,
 // desks/DisputeDesk.sol} in this repository (one disputer, the NFT vote decides and nobody appeals, doer without
 // a $YOLO lock). Amounts are in the reward's own currency: the contracts read no price for any of them.
 (function () {

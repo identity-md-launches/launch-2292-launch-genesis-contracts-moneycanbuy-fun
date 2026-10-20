@@ -37,7 +37,7 @@ The full rules, with references to the code: [docs/MECHANICS.md](docs/MECHANICS.
 
 ## Architecture
 
-- **Contracts** ([contracts/](contracts/)), Solidity 0.8.28, Foundry. `TaskVault` is the only address users call and
+- **Contracts** ([src/](src/)), Solidity 0.8.28, Foundry. `TaskVault` is the only address users call and
   approve for tasks (the $YOLO contracts below take their own $YOLO approvals); it holds every task's money and forwards submissions and disputes to two desks (`CaseDesk`,
   `DisputeDesk`). The doer stake lives in `YoloLockHub`, a $YOLO lock for 1 to 52 weeks whose power raises a doer's
   share of the fee on acceptance. `VotePower` tells the desks who may vote with an NFT now (its owner or a
@@ -71,14 +71,14 @@ docs/
   TOKENOMICS.md      $YOLO supply, split and unlocks, and who gets the fee
   YOLO.md            what $YOLO is used for in the product: rewards, the doer stake, YOLO Predict, trophies, the burner
   LAUNCH-TASK.md     the four launch texts for the IMD swarm
-foundry.toml     Foundry config: sources, tests, scripts and libraries in contracts/
-contracts/       the Foundry project (contracts/README.md: the contracts in detail, gas and size figures)
-  src/             the contracts
-  test/            unit, fuzz, invariant and gas tests; test/review: findings turned into tests;
-                   test/fork: mainnet fork tests
-  script/          LaunchPlan.sol (the order and constructor arguments of the four launches),
-                   check-launch-task.py (docs/LAUNCH-TASK.md against the code)
-  lib/             dependencies as git submodules (not vendored)
+foundry.toml     Foundry config: src/, test/, script/ and lib/ at the repository root
+CONTRACTS.md     the contracts in detail, gas and size figures
+src/             the contracts
+test/            unit, fuzz, invariant and gas tests; test/review: findings turned into tests;
+                 test/fork: mainnet fork tests
+script/          LaunchPlan.sol (the order and constructor arguments of the four launches),
+                 check-launch-task.py (docs/LAUNCH-TASK.md against the code)
+lib/             dependencies as git submodules (not vendored)
 ```
 
 ## Build and test
@@ -87,13 +87,13 @@ You need [Foundry](https://getfoundry.sh) and git.
 
 ```
 git clone --recursive <this repository>
-cd <repository>                                       # foundry.toml is at the root, the project in contracts/
+cd <repository>                                       # foundry.toml, src/, test/, script/, lib/ at the root
 forge build
-forge test                                            # fork tests under contracts/test/fork skip without FORK_URL
-FORK_URL=<mainnet archive RPC> forge test --match-path "contracts/test/fork/*" -vv
-python3 contracts/script/check-launch-task.py         # launch texts in docs/LAUNCH-TASK.md = arguments in the code
+forge test                                            # fork tests under test/fork skip without FORK_URL
+FORK_URL=<mainnet archive RPC> forge test --match-path "test/fork/*" -vv
+python3 script/check-launch-task.py                    # launch texts in docs/LAUNCH-TASK.md = arguments in the code
 ```
 
 Cloned without `--recursive`: run `git submodule update --init --recursive` first. Dependencies are pinned:
 forge-std v1.17.0, OpenZeppelin Contracts v5.1.0 and Uniswap v4-core at `46c6834`, from which only `TickMath` and `FullMath`
-(with their dependencies) are used, by the fork rehearsal and the launch review tests. More in [contracts/README.md](contracts/README.md).
+(with their dependencies) are used, by the fork rehearsal and the launch review tests. More in [CONTRACTS.md](CONTRACTS.md).

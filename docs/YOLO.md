@@ -2,7 +2,7 @@
 
 The token as the code defines it, with a code reference for each rule, plus its uses (the "Uses" section below
 says which of them the code enforces and which are commitments of the project). Code references point to files
-under `contracts/src/` unless they start with `script/` or `test/` (those are under `contracts/`); a function or constant name is given instead of a
+under `src/` unless they start with `script/` or `test/` (those are at the repository root); a function or constant name is given instead of a
 line number. Launch values come from `script/LaunchPlan.sol` and its fork rehearsal test. How the rest of the
 protocol works: [docs/MECHANICS.md](MECHANICS.md). The supply split, the unlock schedule and how the protocol
 prices things without an oracle are in [docs/TOKENOMICS.md](TOKENOMICS.md).
@@ -240,7 +240,7 @@ it if the lock still runs.
 
 | Rule | Value | Code |
 |---|---|---|
-| Lock | `lock(add, weeks)`: adds YOLO (pulled by `transferFrom`) and/or sets the end to 1-52 weeks from now; the end only moves later, the amount only grows; a lock that ended needs a new term | `YoloLockHub.sol` |
+| Lock | `lock(add, weeks)`: adds YOLO (pulled by `transferFrom`) and/or sets the end to 1-52 weeks from now; the end never moves earlier, the amount only grows; a lock that ended needs a new term | `YoloLockHub.sol` |
 | Withdrawal | `withdraw()`: the whole amount once the lock ended; nothing before, no notice | `YoloLockHub.sol` |
 | Power | amount × term in weeks / 52, fixed when the lock is set and constant until its end unless the lock is changed; extending sets it to the whole amount × weeks left / 52; adding without a new term sets it to power + added × weeks left / 52; read from the lock as it stood strictly before the moment asked; every change is checkpointed | `YoloLockHub.sol` |
 | Bonus share | fixed at the submission: b = 4% × min(1, power / (R in $YOLO + A)), R = the task's whole reward at the submission (the pot: the author's share and every top-up), A = the task's $YOLO add-on at the submission; a reward in ETH, USDC or IMD converted at the $YOLO price parameter at submission. Any power counts, there is no threshold; no $YOLO price means no bonus; a doer who contributed to the task's reward gets the bonus as usual | `desks/CaseDesk.sol`; `VaultTypes.sol` |

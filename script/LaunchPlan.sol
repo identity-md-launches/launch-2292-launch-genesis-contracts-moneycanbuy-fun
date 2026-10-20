@@ -68,15 +68,12 @@ library LaunchPlan {
     uint24 internal constant POOL_FEE = 12_500;
     int24 internal constant POOL_TICK_SPACING = 60;
     // DevPrices starting parameters: fixed prices, no oracle, set by hand.
-    // $YOLO: a fixed starting price. ETH and IMD read read-only from mainnet block 26,222,696: ETH/USD Chainlink feed
-    // 0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419 (latestRoundData 238924435045, 8 decimals), IMD/USD from the spot
-    // sqrtPriceX96 of the USDC/IMD Uniswap v3 pool 0x894D4e6d3d2Abc64Fc0de0e4e2Ea63A93BC9c520
-    // (slot0 34585694605687364873528654964413147). These prices may be updated
+    // $YOLO, ETH and IMD: fixed starting prices in USD per whole token. These prices may be updated
     // afterwards as the market moves (at most x10 per call); they size only the stake bonus (the trophy has a
     // fixed 7,777 YOLO price).
     uint256 internal constant YOLO_PRICE_USD = 0.001e18;
-    uint256 internal constant ETH_USD_START = 2389.24435045e18;
-    uint256 internal constant IMD_USD_START = 5.247665725934671441e18;
+    uint256 internal constant ETH_USD_START = 2_300e18;
+    uint256 internal constant IMD_USD_START = 4.44e18;
     // $YOLO: 1B. Trading opens at openAt, fixed at deployment. Minutes 0-30 after it: the wallets of the
     // NFT gate's snapshot of identity.md NFT holders only (500,000 per NFT, no registration), minutes
     // 30-60 buy and sell tax 30% -> 0 to the project wallet, then a plain ERC-20 (YoloToken)
