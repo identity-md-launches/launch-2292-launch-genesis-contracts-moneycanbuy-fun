@@ -1,0 +1,47 @@
+{
+  "kind": "evm_contracts",
+  "contracts": [
+    {
+      "contract": "NftGate",
+      "constructorArgs": [
+        "0x0000ec93127baa929e58e97dd0095a2bfb38ec1d",
+        "0x3c587Eff6c96eAcF7E3dcC2CFf6416161386E48C"
+      ]
+    },
+    {
+      "contract": "IncentivesVesting",
+      "constructorArgs": [
+        "0x7085193516EDc587fAebFF7a48548eAC8db5fAb5"
+      ]
+    },
+    {
+      "contract": "DevVesting",
+      "constructorArgs": [
+        "0x8Ad18E99F4C8d8406f9Ba8899CF308000518A981"
+      ]
+    },
+    {
+      "contract": "TeamVesting",
+      "constructorArgs": [
+        "0x153D12cc398d79A99B781B23DB6399556b84ca76"
+      ]
+    },
+    {
+      "contract": "TreasuryVesting",
+      "constructorArgs": [
+        "0x3c587Eff6c96eAcF7E3dcC2CFf6416161386E48C"
+      ]
+    },
+    {
+      "contract": "YoloSplitter",
+      "constructorArgs": [
+        "$contract:IncentivesVesting",
+        "$contract:DevVesting",
+        "$contract:TeamVesting",
+        "$contract:TreasuryVesting",
+        "0xaaB0269b956bd5F97B44529569b042e7BD72B508"
+      ]
+    }
+  ],
+  "notes": "Genesis of moneycanbuy.fun on Ethereum mainnet, the first of four launches, matching LaunchPlan.genesisLaunch. Deploys these six accepted contracts unchanged in one transaction, without a token or pool. The later custom_token launch uses YoloSplitter as remainderTo and NftGate as a token constructor argument. NftGate records the project wallet's off-chain identity.md NFT snapshot in batches and seals it permanently; each NFT allows 500,000 YOLO of buys in the token's first 30 minutes. The snapshot must be sealed before trading opens; usage is isolated per calling token. YoloSplitter binds itself as the four vestings' sole starter during this deployment transaction. Its first permissionless split(token), after more than 527,777,777 tokens at 18 decimals have arrived, sends 250,000,000 to IncentivesVesting, 150,000,000 to the fixed Stabilizer wallet, 77,777,777 to DevVesting, 50,000,000 to TeamVesting and the remainder to TreasuryVesting. It then calls release(token) on each vesting to start its clock and pay the immediate amounts. Incentives unlocks 62,500,000 immediately and the rest over 730 days; treasury unlocks 74,074,074 immediately and the rest over 365 days; dev and team vest linearly over 365 days. There are no cliffs. Later splitter receipts go to TreasuryVesting on the next split. Anyone may release vested tokens, always to the fixed beneficiary. No owner, admin, pause or upgrade path; no deployment funding or separate initialization calls."
+}
